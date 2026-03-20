@@ -17,9 +17,12 @@ from pathlib import Path
 import click
 
 # Load .env file if present (keeps secrets out of shell profiles and committed code)
+# Search from the package root upward so it works regardless of cwd.
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    _pkg_root = Path(__file__).resolve().parent.parent
+    load_dotenv(_pkg_root / ".env")   # explicit path first
+    load_dotenv()                     # also try cwd / shell env as fallback
 except ImportError:
     pass
 
