@@ -574,44 +574,56 @@ button{cursor:pointer}
   <div class="drawer-body">
     <div class="d-section">
       <div class="d-section-title">Models</div>
+      <div style="color:var(--t2);font-size:0.75rem;line-height:1.5;margin-bottom:10px">
+        <b style="color:var(--green)">100% local:</b> choose Ollama or llama.cpp — no API key, no data leaves your machine.<br>
+        <b style="color:var(--claude)">Cloud:</b> Anthropic Claude — fast, reliable, requires API key.
+      </div>
       <div class="d-model-block">
-        <div class="d-role-label">Planner — decomposes your task</div>
+        <div class="d-role-label">Planner — decomposes your task into steps</div>
         <div class="d-field"><div class="d-row">
           <select id="dPlannerBe" onchange="onDBackendChange()">
-            <option value="anthropic">Anthropic</option>
-            <option value="ollama">Ollama</option>
-            <option value="llamacpp">llama.cpp</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="llamacpp">llama.cpp (local)</option>
+            <option value="anthropic">Anthropic (cloud)</option>
           </select>
-          <input id="dPlannerModel" list="dClaudeList" placeholder="model">
+          <input id="dPlannerModel" list="dModelList" placeholder="model name">
         </div></div>
       </div>
       <div class="d-model-block">
-        <div class="d-role-label">Executor — acts on each step</div>
+        <div class="d-role-label">Executor — picks an action every step</div>
         <div class="d-field"><div class="d-row">
           <select id="dExecutorBe" onchange="onDBackendChange()">
-            <option value="anthropic">Anthropic</option>
-            <option value="ollama">Ollama</option>
-            <option value="llamacpp">llama.cpp</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="llamacpp">llama.cpp (local)</option>
+            <option value="anthropic">Anthropic (cloud)</option>
           </select>
-          <input id="dExecutorModel" list="dClaudeList" placeholder="model">
+          <input id="dExecutorModel" list="dModelList" placeholder="model name">
         </div></div>
       </div>
       <div class="d-model-block">
-        <div class="d-role-label">Validator — checks success</div>
+        <div class="d-role-label">Validator — confirms sub-goal success</div>
         <div class="d-field"><div class="d-row">
           <select id="dValidatorBe" onchange="onDBackendChange()">
-            <option value="anthropic">Anthropic</option>
-            <option value="ollama">Ollama</option>
-            <option value="llamacpp">llama.cpp</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="llamacpp">llama.cpp (local)</option>
+            <option value="anthropic">Anthropic (cloud)</option>
           </select>
-          <input id="dValidatorModel" list="dClaudeList" placeholder="model">
+          <input id="dValidatorModel" list="dModelList" placeholder="model name">
         </div></div>
       </div>
-      <datalist id="dClaudeList">
+      <datalist id="dModelList">
         <option value="claude-haiku-4-5-20251001">
         <option value="claude-sonnet-4-6">
         <option value="claude-opus-4-6">
+        <option value="qwen2.5:7b">
+        <option value="qwen2.5:14b">
+        <option value="qwen2.5:72b">
+        <option value="llama3.2:3b">
+        <option value="llama3.1:8b">
+        <option value="minicpm-v:8b">
       </datalist>
+
+      <!-- Anthropic API key (shown only when anthropic selected) -->
       <div class="api-key-wrap" id="dApiKeyWrap">
         <label>Anthropic API Key</label>
         <div class="api-key-row">
@@ -619,8 +631,47 @@ button{cursor:pointer}
           <button class="api-eye" onclick="toggleApiVis()" id="apiEye">👁</button>
         </div>
       </div>
-      <div class="d-section-title" style="margin-top:14px">Model presets</div>
+
+      <!-- Ollama hint (shown only when ollama selected) -->
+      <div id="dOllamaHint" style="display:none;margin-top:8px;padding:8px 10px;background:var(--green-d);border:1px solid var(--green);border-radius:6px;font-size:0.75rem;color:var(--green);line-height:1.5">
+        <b>Using local Ollama models</b> — no API costs, fully private.<br>
+        Make sure Ollama is running: <code style="background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px">ollama serve</code><br>
+        Pull models with: <code style="background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px">ollama pull qwen2.5:7b</code>
+      </div>
+
+      <div class="d-section-title" style="margin-top:14px">Quick presets</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px" id="modelPresetPills"></div>
+    </div>
+
+    <div class="d-section">
+      <div class="d-section-title">MCP Tools <span style="font-size:0.68rem;background:var(--purple-d);color:var(--purple);padding:1px 6px;border-radius:10px;margin-left:4px;vertical-align:middle">beta</span></div>
+      <div style="color:var(--t2);font-size:0.75rem;line-height:1.5;margin-bottom:12px">
+        MCP servers give the agent extra tools beyond the browser — read files, search the web, query databases, and more.
+        <a href="https://modelcontextprotocol.io/servers" target="_blank" style="color:var(--blue);text-decoration:none">Browse all servers →</a>
+      </div>
+
+      <!-- Active servers list -->
+      <div id="mcpServersList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+
+      <!-- Quick-add buttons -->
+      <div style="font-size:0.72rem;color:var(--t2);margin-bottom:6px;font-weight:500;letter-spacing:0.04em;text-transform:uppercase">Quick add</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+        <button onclick="mcpQuickAdd('filesystem')" style="padding:4px 10px;border-radius:16px;border:1px solid var(--border);font-size:0.75rem;color:var(--t1);background:var(--bg2);cursor:pointer" onmouseenter="this.style.borderColor='var(--teal)';this.style.color='var(--teal)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--t1)'">📁 Filesystem</button>
+        <button onclick="mcpQuickAdd('fetch')"      style="padding:4px 10px;border-radius:16px;border:1px solid var(--border);font-size:0.75rem;color:var(--t1);background:var(--bg2);cursor:pointer" onmouseenter="this.style.borderColor='var(--teal)';this.style.color='var(--teal)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--t1)'">🌐 Web fetch</button>
+        <button onclick="mcpQuickAdd('brave')"      style="padding:4px 10px;border-radius:16px;border:1px solid var(--border);font-size:0.75rem;color:var(--t1);background:var(--bg2);cursor:pointer" onmouseenter="this.style.borderColor='var(--teal)';this.style.color='var(--teal)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--t1)'">🔍 Brave search</button>
+        <button onclick="mcpQuickAdd('sqlite')"     style="padding:4px 10px;border-radius:16px;border:1px solid var(--border);font-size:0.75rem;color:var(--t1);background:var(--bg2);cursor:pointer" onmouseenter="this.style.borderColor='var(--teal)';this.style.color='var(--teal)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--t1)'">🗄 SQLite</button>
+      </div>
+
+      <!-- Custom server form -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:0.75rem;color:var(--t1);font-weight:500">Add custom server</div>
+        <div style="display:grid;grid-template-columns:90px 80px 1fr;gap:6px">
+          <div><div style="font-size:0.68rem;color:var(--t2);margin-bottom:3px">Name</div><input id="mcpName" placeholder="filesystem" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:5px 8px;font-size:0.78rem;color:var(--t0)"></div>
+          <div><div style="font-size:0.68rem;color:var(--t2);margin-bottom:3px">Command</div><input id="mcpCmd" placeholder="npx" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:5px 8px;font-size:0.78rem;color:var(--t0)"></div>
+          <div><div style="font-size:0.68rem;color:var(--t2);margin-bottom:3px">Args (space-separated)</div><input id="mcpArgs" placeholder="-y @modelcontextprotocol/server-filesystem /path" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:5px 8px;font-size:0.78rem;color:var(--t0)"></div>
+        </div>
+        <button onclick="mcpAddCustom()" style="align-self:flex-start;padding:5px 14px;background:var(--teal);color:#000;border-radius:5px;font-size:0.78rem;font-weight:600;cursor:pointer">Add server</button>
+      </div>
     </div>
 
     <div class="d-section">
@@ -880,11 +931,16 @@ function renderPresets(){
     </div>`).join('');
 }
 function renderModelPills(){
-  $('modelPresetPills').innerHTML=modelPresets.map(p=>`
-    <div onclick="applyModelPreset('${p.id}')" style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;cursor:pointer;color:var(--t1);transition:all 0.15s;white-space:nowrap"
-      onmouseenter="this.style.borderColor='var(--border-hi)';this.style.color='var(--t0)'"
+  $('modelPresetPills').innerHTML=modelPresets.map(p=>{
+    const isCloud=p.planner?.backend==='anthropic';
+    const color=isCloud?'var(--claude)':'var(--green)';
+    const icon=isCloud?'☁ ':'⬡ ';
+    return`<div onclick="applyModelPreset('${p.id}')" title="${p.description||''}"
+      style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;cursor:pointer;color:var(--t1);transition:all 0.15s;white-space:nowrap"
+      onmouseenter="this.style.borderColor='${color}';this.style.color='${color}'"
       onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--t1)'"
-    >${p.id==='claude'?'✦ ':p.id==='claude_sonnet'?'✦ ':''}${p.name}</div>`).join('');
+    >${icon}${p.name}</div>`;
+  }).join('');
 }
 function applyModelPreset(id){
   const p=modelPresets.find(x=>x.id===id); if(!p)return;
@@ -931,6 +987,8 @@ function updateTaskFromVars(){
 }
 
 // ── Config / Settings Drawer ─────────────────
+let mcpServers=[];  // local copy of configured MCP servers
+
 async function loadConfig(){
   try{
     const cfg=await(await fetch('/api/config')).json();
@@ -940,13 +998,17 @@ async function loadConfig(){
     if(cfg.agent){$('dMaxSteps').value=cfg.agent.max_steps||100;$('dTimeout').value=cfg.agent.max_seconds||600;maxSteps=cfg.agent.max_steps||100;$('stepMax').textContent=maxSteps;}
     if(cfg.browser?.headless) $('dHeadless').classList.add('on');
     if(cfg.safety?.dry_run) $('dDryRun').classList.add('on');
+    mcpServers=cfg.mcp_servers||[];
+    renderMcpServers();
     onDBackendChange(); updateModelBadge();
   }catch(e){console.warn('Config load failed:',e)}
 }
 
 function onDBackendChange(){
   const hasAnthropic=['dPlannerBe','dExecutorBe','dValidatorBe'].some(id=>$(id).value==='anthropic');
+  const hasOllama=['dPlannerBe','dExecutorBe','dValidatorBe'].some(id=>$(id).value==='ollama');
   $('dApiKeyWrap').classList.toggle('show',hasAnthropic);
+  $('dOllamaHint').style.display=hasOllama&&!hasAnthropic?'block':'none';
   updateModelBadge();
 }
 
@@ -960,6 +1022,7 @@ function updateModelBadge(){
     else if(model.includes('opus')) label='Claude Opus';
     else label='Claude';
   }else if(be==='ollama') label=model.split(':')[0];
+  else if(be==='llamacpp') label='llama.cpp';
   $('modelBadgeLabel').textContent=label;
 }
 
@@ -969,24 +1032,91 @@ function toggleApiVis(){
   $('apiEye').style.opacity=apiKeyHidden?'1':'0.5';
 }
 
-async function applyConfig(){
+// ── MCP server management ─────────────────────
+const MCP_QUICK={
+  filesystem:{name:'filesystem',command:'npx',args:['-y','@modelcontextprotocol/server-filesystem',window.location.hostname==='127.0.0.1'?'/Users/'+navigator.userAgent.match(/Mac OS X/)?'kush':''||'/home':'/'],
+    desc:'Read, write, search files on your computer'},
+  fetch:{name:'fetch',command:'npx',args:['-y','@modelcontextprotocol/server-fetch'],
+    desc:'Fetch web pages and APIs directly (no browser needed)'},
+  brave:{name:'brave-search',command:'npx',args:['-y','@modelcontextprotocol/server-brave-search'],
+    desc:'Brave Search API — set BRAVE_API_KEY env var'},
+  sqlite:{name:'sqlite',command:'npx',args:['-y','@modelcontextprotocol/server-sqlite','--db-path','./data.db'],
+    desc:'Query a local SQLite database'},
+};
+
+function mcpQuickAdd(key){
+  const t=MCP_QUICK[key]; if(!t)return;
+  // If filesystem, prompt for the path
+  let srv={...t};
+  if(key==='filesystem'){
+    const p=prompt('Which folder should the agent have access to?','/Users/kush/Desktop');
+    if(p===null)return;
+    srv.args=['-y','@modelcontextprotocol/server-filesystem',p.trim()||'/Users/kush/Desktop'];
+  }
+  if(mcpServers.find(s=>s.name===srv.name)){toast(`${srv.name} already added`,'info');return;}
+  mcpServers=[...mcpServers,{name:srv.name,command:srv.command,args:srv.args,env:{}}];
+  renderMcpServers();
+  toast(`${srv.name} added — click Apply to save`,'ok');
+}
+
+function mcpAddCustom(){
+  const name=$('mcpName').value.trim();
+  const cmd=$('mcpCmd').value.trim();
+  const argsRaw=$('mcpArgs').value.trim();
+  if(!name||!cmd){toast('Name and command are required','err');return;}
+  const args=argsRaw?argsRaw.split(/\s+/):[];
+  if(mcpServers.find(s=>s.name===name)){toast(`${name} already added`,'info');return;}
+  mcpServers=[...mcpServers,{name,command:cmd,args,env:{}}];
+  $('mcpName').value='';$('mcpCmd').value='';$('mcpArgs').value='';
+  renderMcpServers();
+  toast(`${name} added — click Apply to save`,'ok');
+}
+
+function mcpRemove(name){
+  mcpServers=mcpServers.filter(s=>s.name!==name);
+  renderMcpServers();
+}
+
+function renderMcpServers(){
+  const el=$('mcpServersList');
+  if(!mcpServers.length){
+    el.innerHTML='<div style="color:var(--t2);font-size:0.75rem;padding:4px 0">No MCP servers configured.</div>';
+    return;
+  }
+  el.innerHTML=mcpServers.map(s=>`
+    <div style="background:var(--bg2);border:1px solid var(--teal);border-radius:6px;padding:8px 10px;display:flex;align-items:center;gap:8px">
+      <span style="font-size:0.85rem">🔌</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:0.8rem;font-weight:600;color:var(--teal)">${s.name}</div>
+        <div style="font-size:0.7rem;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.command} ${(s.args||[]).join(' ')}</div>
+      </div>
+      <button onclick="mcpRemove('${s.name}')" style="color:var(--red);background:none;border:none;font-size:1rem;cursor:pointer;padding:0 4px;opacity:0.7" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.7'">×</button>
+    </div>`).join('');
+}
+
+function buildConfigPayload(){
   const apiKey=$('dApiKey').value.trim()||undefined;
   const plannerCfg={model:$('dPlannerModel').value,backend:$('dPlannerBe').value};
   const executorCfg={model:$('dExecutorModel').value,backend:$('dExecutorBe').value};
   const validatorCfg={model:$('dValidatorModel').value,backend:$('dValidatorBe').value};
   if(apiKey){plannerCfg.api_key=apiKey;executorCfg.api_key=apiKey;validatorCfg.api_key=apiKey;}
-  maxSteps=parseInt($('dMaxSteps').value)||100;$('stepMax').textContent=maxSteps;
-  await fetch('/api/config',{
-    method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      planner:plannerCfg,executor:executorCfg,validator:validatorCfg,
-      browser:{headless:$('dHeadless').classList.contains('on')},
-      safety:{dry_run:$('dDryRun').classList.contains('on')},
-      agent:{max_steps:maxSteps,max_seconds:parseInt($('dTimeout').value)||600},
-    }),
-  });
+  const steps=parseInt($('dMaxSteps').value)||100;
+  return{
+    planner:plannerCfg,executor:executorCfg,validator:validatorCfg,
+    browser:{headless:$('dHeadless').classList.contains('on')},
+    safety:{dry_run:$('dDryRun').classList.contains('on')},
+    agent:{max_steps:steps,max_seconds:parseInt($('dTimeout').value)||600},
+    mcp_servers:mcpServers,
+  };
+}
+
+async function applyConfig(){
+  const payload=buildConfigPayload();
+  maxSteps=payload.agent.max_steps; $('stepMax').textContent=maxSteps;
+  await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   updateModelBadge(); closeDrawer();
-  toast('Configuration saved','ok');
+  const mcpMsg=mcpServers.length?` + ${mcpServers.length} MCP tool${mcpServers.length>1?'s':''}`:' (no MCP tools)';
+  toast('Configuration saved'+mcpMsg,'ok');
 }
 
 function openDrawer(){$('settingsDrawer').classList.add('show');$('drawerBg').classList.add('show')}
@@ -997,7 +1127,9 @@ async function startAgent(){
   const task=$('taskInput').value.trim();
   if(!task){toast('Please describe a task first','err');return;}
   // Push latest config before starting
-  await applyConfigSilent();
+  const payload=buildConfigPayload();
+  maxSteps=payload.agent.max_steps;
+  await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(()=>{});
   $('goalsList').innerHTML='<div style="color:var(--t2);font-size:0.8rem;padding:8px 4px">Planning your task…</div>';
   clearLog(); $('vpImg').style.display='none'; $('vpImg').classList.remove('show'); $('vpPh').style.display='';
   $('vpUrl').style.display='none'; $('tbMem').style.display='none'; setProgress(3);
@@ -1005,24 +1137,6 @@ async function startAgent(){
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({task,start_url:$('startUrl').value||'https://www.google.com'}),
   });
-}
-
-async function applyConfigSilent(){
-  const apiKey=$('dApiKey').value.trim()||undefined;
-  const plannerCfg={model:$('dPlannerModel').value,backend:$('dPlannerBe').value};
-  const executorCfg={model:$('dExecutorModel').value,backend:$('dExecutorBe').value};
-  const validatorCfg={model:$('dValidatorModel').value,backend:$('dValidatorBe').value};
-  if(apiKey){plannerCfg.api_key=apiKey;executorCfg.api_key=apiKey;validatorCfg.api_key=apiKey;}
-  maxSteps=parseInt($('dMaxSteps').value)||100;
-  await fetch('/api/config',{
-    method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      planner:plannerCfg,executor:executorCfg,validator:validatorCfg,
-      browser:{headless:$('dHeadless').classList.contains('on')},
-      safety:{dry_run:$('dDryRun').classList.contains('on')},
-      agent:{max_steps:maxSteps,max_seconds:parseInt($('dTimeout').value)||600},
-    }),
-  }).catch(()=>{});
 }
 
 async function pauseAgent(){

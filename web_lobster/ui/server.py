@@ -72,6 +72,7 @@ class ConfigUpdate(BaseModel):
     browser: Optional[dict] = None
     safety: Optional[dict] = None
     agent: Optional[dict] = None
+    mcp_servers: Optional[list] = None
 
 
 @app.put("/api/config")
@@ -84,8 +85,12 @@ async def update_config(update: ConfigUpdate):
         )
     data = shared.config.model_dump()
     for key, val in update.model_dump(exclude_none=True).items():
-        if key in data and isinstance(val, dict):
+        if key not in data:
+            continue
+        if isinstance(val, dict):
             data[key].update(val)
+        else:
+            data[key] = val  # handles lists (mcp_servers) and scalars
     shared.config = WebLobsterConfig(**data)
     logger.info("config_updated")
     return {"status": "ok", "config": shared.config.model_dump()}
