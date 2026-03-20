@@ -83,15 +83,26 @@ Based on what you see, has the success criteria been met?"""
                 prompt += f"\n\nVISIBLE PAGE TEXT (truncated):\n{observation.page_text[:2000]}"
             prompt += f"\n\nINTERACTIVE ELEMENTS:\n{observation.elements_summary(20)}"
 
-        response = await self.backend.generate(
-            prompt=prompt,
-            system=system,
-            images=images,
-            temperature=self.temperature,
-            max_tokens=512,
-        )
-
-        result = self._parse_result(response)
+        # Use structured tool_use when available (e.g. AnthropicBackend) to
+        # eliminate JSON parse failures. Fall back to text generation + parsing
+        # for Ollama / llama.cpp backends that don't implement this method.
+        if hasattr(self.backend, "decide_validation"):
+            result = await self.backend.decide_validation(
+                prompt=prompt,
+                system=system,
+                images=images,
+                temperature=self.temperature,
+                max_tokens=256,
+            )
+        else:
+            response = await self.backend.generate(
+                prompt=prompt,
+                system=system,
+                images=images,
+                temperature=self.temperature,
+                max_tokens=512,
+            )
+            result = self._parse_result(response)
         logger.info(
             "validation",
             goal=sub_goal.goal[:50],

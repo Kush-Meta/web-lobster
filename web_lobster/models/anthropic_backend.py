@@ -8,12 +8,13 @@ Advantages over local backends:
 
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import anthropic
 
-from web_lobster.core.schemas import Action, ActionType
+from web_lobster.core.schemas import Action, ActionType, ValidationResult
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
 
@@ -83,6 +84,34 @@ DECIDE_ACTION_TOOL = {
             "seconds": {
                 "type": "number",
                 "description": "Seconds to wait. Required for 'wait' action.",
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+VALIDATE_RESULT_TOOL = {
+    "name": "validate_result",
+    "description": (
+        "Report whether the sub-goal success criteria has been met. "
+        "You MUST call this tool — do not respond with plain text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "required": ["achieved", "confidence", "observation"],
+        "properties": {
+            "achieved": {
+                "type": "boolean",
+                "description": "True only if the success criteria is clearly met.",
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence score between 0.0 and 1.0.",
+            },
+            "observation": {
+                "type": "string",
+                "description": "Brief description of what you see on the page.",
             },
         },
         "additionalProperties": False,
@@ -171,7 +200,7 @@ class AnthropicBackend(ModelBackend):
             has_images=bool(images),
         )
 
-        response = await client.messages.create(**kwargs)
+        response = await self._call_with_retry(**kwargs)
         text = response.content[0].text
 
         logger.debug(
@@ -226,7 +255,7 @@ class AnthropicBackend(ModelBackend):
 
         logger.debug("anthropic_decide_action", model=self.model, prompt_len=len(prompt), has_image=bool(images))
 
-        response = await client.messages.create(**kwargs)
+        response = await self._call_with_retry(**kwargs)
 
         # Find the tool_use block — guaranteed present due to forced tool_choice
         tool_block = next(
@@ -247,6 +276,106 @@ class AnthropicBackend(ModelBackend):
         )
 
         return Action(**raw)
+
+    async def _call_with_retry(self, **kwargs: Any):
+        """Call client.messages.create with exponential backoff for rate limits.
+
+        The Anthropic SDK has built-in retries (max_retries=2) but they use
+        short delays. For free-tier rate limits (30K tokens/min) we need up to
+        4 retries with delays that respect the Retry-After header.
+        """
+        client = self._get_client()
+        delays = [5, 10, 20, 40]
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt, delay in enumerate([0] + delays, start=1):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                return await client.messages.create(**kwargs)
+            except anthropic.RateLimitError as e:
+                last_exc = e
+                retry_after = int(getattr(e, "response", None) and
+                                  e.response.headers.get("retry-after", 0) or 0)
+                wait = max(delay, retry_after or delay)
+                logger.warning("rate_limit", attempt=attempt, wait=wait)
+                if attempt > len(delays):
+                    raise
+                await asyncio.sleep(wait)
+            except anthropic.APIStatusError as e:
+                last_exc = e
+                if e.status_code and e.status_code < 500:
+                    raise  # 4xx errors (other than 429) are not retryable
+                logger.warning("api_server_error", attempt=attempt, status=e.status_code)
+                if attempt > len(delays):
+                    raise
+            except anthropic.APIConnectionError as e:
+                last_exc = e
+                logger.warning("api_connection_error", attempt=attempt)
+                if attempt > len(delays):
+                    raise
+        raise last_exc
+
+    async def decide_validation(
+        self,
+        prompt: str,
+        system: Optional[str] = None,
+        images: Optional[list[str]] = None,
+        temperature: float = 0.1,
+        max_tokens: int = 256,
+    ) -> ValidationResult:
+        """Validator-specific: uses tool_use to return a guaranteed-valid ValidationResult.
+
+        Mirrors decide_action — by forcing Claude to call validate_result, we
+        eliminate all JSON parsing fragility from the validator.
+        """
+        if images:
+            content: list = []
+            for b64 in images:
+                media_type = "image/jpeg" if b64.startswith("/9j/") else "image/png"
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64},
+                })
+            content.append({"type": "text", "text": prompt})
+        else:
+            content = prompt
+
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "tools": [VALIDATE_RESULT_TOOL],
+            "tool_choice": {"type": "tool", "name": "validate_result"},
+            "messages": [{"role": "user", "content": content}],
+        }
+        if system:
+            kwargs["system"] = system
+
+        logger.debug("anthropic_decide_validation", model=self.model, has_image=bool(images))
+
+        response = await self._call_with_retry(**kwargs)
+
+        tool_block = next(
+            (b for b in response.content if b.type == "tool_use"),
+            None,
+        )
+        if tool_block is None:
+            logger.error("anthropic_no_validate_block", content=str(response.content))
+            return ValidationResult(achieved=False, confidence=0.0, observation="No tool_use block")
+
+        raw = tool_block.input
+        logger.debug(
+            "anthropic_validation",
+            achieved=raw.get("achieved"),
+            confidence=raw.get("confidence"),
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+        return ValidationResult(
+            achieved=bool(raw.get("achieved", False)),
+            confidence=float(max(0.0, min(1.0, raw.get("confidence", 0.0)))),
+            observation=str(raw.get("observation", "")),
+        )
 
     async def is_available(self) -> bool:
         if not self._api_key and not os.environ.get("ANTHROPIC_API_KEY"):

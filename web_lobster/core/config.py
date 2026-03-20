@@ -56,6 +56,7 @@ class AgentConfig(BaseModel):
     validation_confidence_threshold: float = 0.7
     action_retry_limit: int = 2
     screenshot_mode: str = "hybrid"  # "hybrid", "screenshot_only", "dom_only"
+    max_seconds: int = 600           # wall-clock timeout; 0 = no limit
 
 
 class WebLobsterConfig(BaseModel):

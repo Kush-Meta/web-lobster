@@ -143,6 +143,38 @@ class Orchestrator:
         if not self.ui:
             self.display.start(task, self.config.agent.max_steps, memory_hits)
 
+        # Optionally cap total wall-clock time
+        max_seconds = self.config.agent.max_seconds
+        if max_seconds > 0:
+            try:
+                return await asyncio.wait_for(
+                    self._run_inner(task, start_url, start_time, memory_context, memory_hits),
+                    timeout=max_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.error("task_timeout", seconds=max_seconds)
+                if not self.ui:
+                    self.display.stop()
+                await self.browser.close()
+                return AgentResult(
+                    success=False,
+                    task=task,
+                    plan=self.state.plan,
+                    steps_taken=self.state.step_count,
+                    elapsed_seconds=time.time() - start_time,
+                    error=f"Timed out after {max_seconds}s",
+                )
+        else:
+            return await self._run_inner(task, start_url, start_time, memory_context, memory_hits)
+
+    async def _run_inner(
+        self,
+        task: str,
+        start_url: str,
+        start_time: float,
+        memory_context: Optional[str],
+        memory_hits: int,
+    ) -> AgentResult:
         try:
             # 1. Launch browser
             await self.browser.start(start_url)
@@ -248,7 +280,9 @@ class Orchestrator:
         """Run the Observe → Reflect → Act loop for a single sub-goal."""
         self.safety.reset_counter()
         self.stuck_detector.reset()
-        reflection: Optional[str] = None  # Carries failure diagnosis into next attempt
+        # Accumulated reflections: persist across multiple stuck-then-retry cycles
+        # so the model never loses the diagnostic history of this sub-goal.
+        reflections: list[str] = []
 
         for attempt in range(sub_goal.max_attempts):
             sub_goal.attempts = attempt + 1
@@ -270,12 +304,15 @@ class Orchestrator:
                 await self._ui_emit("on_observation", observation)
 
                 # --- THINK: executor with visual grounding + reflection context ---
+                # Pass at most the last 2 reflections so the model has full context
+                # of why previous attempts failed, even across multiple stuck cycles.
+                combined_reflection = "\n\n".join(reflections[-2:]) if reflections else None
                 action = await self.executor.decide(
                     observation=observation,
                     sub_goal=sub_goal,
                     action_history_text=self.state.action_history_summary(),
                     actions_taken_this_subgoal=action_count_this_attempt - 1,
-                    reflection=reflection,
+                    reflection=combined_reflection,
                 )
 
                 # --- TERMINAL: done ---
@@ -290,6 +327,30 @@ class Orchestrator:
                         logger.warning("validation_failed", confidence=result.confidence,
                                        observation=result.observation[:80])
                         break
+
+                # --- ELEMENT ID VALIDATION ---
+                # Catch hallucinated or stale element IDs before they cause a
+                # 30-second Playwright timeout that wastes the step budget.
+                actions_needing_element = {
+                    ActionType.CLICK, ActionType.TYPE,
+                    ActionType.SELECT, ActionType.HOVER,
+                }
+                if action.action in actions_needing_element and action.element_id is not None:
+                    valid_ids = {el.id for el in observation.elements}
+                    if action.element_id not in valid_ids:
+                        logger.warning(
+                            "invalid_element_id",
+                            element_id=action.element_id,
+                            valid_count=len(valid_ids),
+                        )
+                        self.state.action_history.append(
+                            Action(
+                                action=ActionType.WAIT,
+                                seconds=1,
+                                reason=f"element_id {action.element_id} not on page (valid: {sorted(valid_ids)[:10]})",
+                            )
+                        )
+                        continue
 
                 # --- SAFETY CHECK ---
                 verdict = self.safety.check(action, observation)
@@ -338,16 +399,19 @@ class Orchestrator:
                 )
                 if self.stuck_detector.is_stuck():
                     logger.warning("stuck_detected", attempt=attempt + 1)
-                    # Reflect on why we're stuck before the next attempt
+                    # Reflect on why we're stuck and accumulate the diagnosis.
+                    # We keep reflections across attempts so the model always has
+                    # the full history of what went wrong in this sub-goal.
                     try:
-                        reflection = await self.executor.reflect(
+                        new_reflection = await self.executor.reflect(
                             observation=observation,
                             sub_goal=sub_goal,
                             failed_actions=self.stuck_detector.get_failed_actions(),
                         )
-                        logger.info("reflection_ready", text=reflection[:80])
+                        reflections.append(new_reflection)
+                        logger.info("reflection_ready", total=len(reflections), text=new_reflection[:80])
                     except Exception:
-                        reflection = None
+                        pass  # reflection is optional; continue without it
                     self.stuck_detector.reset()
                     break
 

@@ -75,3 +75,4 @@ agent:
   validation_confidence_threshold: 0.7
   action_retry_limit: 2
   screenshot_mode: "hybrid"    # "hybrid", "screenshot_only", "dom_only"
+  max_seconds: 600             # Wall-clock timeout in seconds (0 = no limit)
