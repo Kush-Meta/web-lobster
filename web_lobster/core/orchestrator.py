@@ -131,13 +131,14 @@ class Orchestrator:
         """
         logger.info("task_start", task=task)
         start_time = time.time()
-        await self._ui_emit("on_task_start", task)
-
-        # Retrieve relevant past experiences before planning
+        # Retrieve relevant past experiences before planning (before UI start
+        # so we can pass memory_hits to both the display and the UI event)
         memory_context = self.memory.format_for_prompt(task)
         memory_hits = len(self.memory.find_similar(task)) if memory_context else 0
         if memory_context:
             logger.info("memory_context", hits=memory_hits)
+
+        await self._ui_emit("on_task_start", task, memory_hits=memory_hits)
 
         # Start live display (CLI mode only)
         if not self.ui:

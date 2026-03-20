@@ -95,13 +95,13 @@ class SharedState:
 
     # ── Orchestrator hooks (called from orchestrator) ─────
 
-    async def on_task_start(self, task: str) -> None:
+    async def on_task_start(self, task: str, memory_hits: int = 0) -> None:
         self.current_task = task
         self.phase = AgentPhase.PLANNING
         self.step_count = 0
         self.action_log = []
         self.start_time = time.time()
-        await self.emit("task_start", task=task)
+        await self.emit("task_start", task=task, memory_hits=memory_hits)
 
     async def on_plan_ready(self, plan: TaskPlan) -> None:
         self.plan = plan
@@ -164,12 +164,20 @@ class SharedState:
         goals = [{"id": sg.id, "goal": sg.goal} for sg in new_goals]
         await self.emit("replan", new_goals=goals)
 
-    async def on_task_complete(self, success: bool, summary: str = "") -> None:
+    async def on_task_complete(
+        self,
+        success: bool,
+        summary: str = "",
+        answer: Optional[str] = None,
+        memory_hits: int = 0,
+    ) -> None:
         self.phase = AgentPhase.COMPLETED if success else AgentPhase.FAILED
         elapsed = time.time() - (self.start_time or time.time())
         await self.emit("task_complete",
                         success=success,
                         summary=summary,
+                        answer=answer,
+                        memory_hits=memory_hits,
                         steps=self.step_count,
                         elapsed=round(elapsed, 1))
 

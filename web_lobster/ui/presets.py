@@ -102,6 +102,24 @@ TASK_PRESETS = [
 
 MODEL_PRESETS = [
     {
+        "id": "claude",
+        "name": "Claude",
+        "description": "Anthropic Claude Haiku — fast, reliable, vision. No local GPU needed.",
+        "icon": "sparkle",
+        "planner": {"model": "claude-haiku-4-5-20251001", "backend": "anthropic"},
+        "executor": {"model": "claude-haiku-4-5-20251001", "backend": "anthropic"},
+        "validator": {"model": "claude-haiku-4-5-20251001", "backend": "anthropic"},
+    },
+    {
+        "id": "claude_sonnet",
+        "name": "Claude Sonnet",
+        "description": "Claude Sonnet 4.6 for planner + Haiku for executor/validator. Best reasoning.",
+        "icon": "sparkle",
+        "planner": {"model": "claude-sonnet-4-6", "backend": "anthropic"},
+        "executor": {"model": "claude-haiku-4-5-20251001", "backend": "anthropic"},
+        "validator": {"model": "claude-haiku-4-5-20251001", "backend": "anthropic"},
+    },
+    {
         "id": "full_power",
         "name": "Full power",
         "description": "Best quality. Requires ~48GB+ VRAM.",

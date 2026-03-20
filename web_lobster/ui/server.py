@@ -136,7 +136,12 @@ async def _run_agent(task: str, start_url: str):
     """Background coroutine that runs the orchestrator."""
     try:
         result = await _orchestrator.run(task, start_url=start_url)
-        await shared.on_task_complete(result.success, result.summary())
+        await shared.on_task_complete(
+            result.success,
+            result.summary(),
+            answer=result.answer,
+            memory_hits=getattr(result, "memory_hits", 0),
+        )
     except asyncio.CancelledError:
         await shared.on_task_complete(False, "Task cancelled by user")
     except Exception as e:
