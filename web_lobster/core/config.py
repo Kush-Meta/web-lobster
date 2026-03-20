@@ -90,6 +90,24 @@ class WebLobsterConfig(BaseModel):
             data = yaml.safe_load(f) or {}
         return cls(**data)
 
+    def upgrade_ollama_to_anthropic(self) -> "WebLobsterConfig":
+        """If all roles are ollama but ANTHROPIC_API_KEY is set, upgrade to Haiku.
+
+        Safe to call on any config — returns self unchanged when the condition
+        isn't met (key missing, or at least one non-ollama backend already set).
+        """
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return self
+        roles = [self.planner, self.executor, self.validator]
+        if not all(r.backend == "ollama" for r in roles):
+            return self
+        haiku = "claude-haiku-4-5-20251001"
+        data = self.model_dump()
+        data["planner"].update(backend="anthropic", model=haiku)
+        data["executor"].update(backend="anthropic", model=haiku)
+        data["validator"].update(backend="anthropic", model=haiku)
+        return WebLobsterConfig(**data)
+
     @classmethod
     def default(cls) -> WebLobsterConfig:
         """Return sensible defaults.

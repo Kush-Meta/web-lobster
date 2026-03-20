@@ -63,6 +63,7 @@ def run(task, config, start_url, dry_run, headless, verbose, max_steps):
         set_log_level("DEBUG")
 
     cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
+    cfg = cfg.upgrade_ollama_to_anthropic()
     if dry_run:
         cfg.safety.dry_run = True
     if headless:

@@ -215,7 +215,7 @@ def run_server(host: str = "127.0.0.1", port: int = 7860, config: Optional[WebLo
     import uvicorn
 
     if config:
-        shared.config = config
+        shared.config = config.upgrade_ollama_to_anthropic()
 
     logger.info("dashboard_starting", url=f"http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
