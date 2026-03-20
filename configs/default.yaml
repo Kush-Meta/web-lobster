@@ -1,0 +1,77 @@
+# Web Lobster — Default Configuration
+# Copy this file and customize for your setup.
+#
+# Model sizes and your available VRAM will determine which models to use.
+# The defaults below assume ~16GB+ VRAM. For less, use smaller models.
+
+# ── Planner ─────────────────────────────────────────────
+# Large model for task decomposition. Called once per task.
+# Prioritize reasoning quality over speed.
+planner:
+  backend: ollama
+  model: "qwen2.5:72b"        # Options: qwen2.5:72b, llama3.1:70b, deepseek-v2:16b
+  base_url: "http://localhost:11434"
+  temperature: 0.2
+  max_tokens: 4096
+  timeout: 180.0
+
+# ── Executor ────────────────────────────────────────────
+# Small/fast model for single-action decisions. Called every step.
+# Prioritize speed and output reliability.
+executor:
+  backend: ollama              # Use "llamacpp" for grammar-constrained output
+  model: "qwen2.5:7b"         # Options: qwen2.5:7b, phi3:mini, llama3.2:3b
+  base_url: "http://localhost:11434"
+  temperature: 0.0             # Deterministic for reproducibility
+  max_tokens: 256
+  timeout: 30.0
+  # grammar_path: null         # Set to GGUF path if using llamacpp backend
+
+# ── Validator ───────────────────────────────────────────
+# Vision model for verifying sub-goal completion via screenshots.
+validator:
+  backend: ollama
+  model: "minicpm-v:8b"       # Options: minicpm-v:8b, llava:13b, qwen2-vl:7b
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 512
+  timeout: 60.0
+
+# ── Browser ─────────────────────────────────────────────
+browser:
+  headless: false              # Set true for server/CI environments
+  viewport_width: 1280
+  viewport_height: 900
+  default_timeout: 30.0        # Seconds to wait for elements
+  screenshot_quality: 80       # JPEG quality (lower = smaller/faster)
+  slow_mo: 0.0                # Milliseconds between actions (for debugging)
+
+# ── Safety ──────────────────────────────────────────────
+safety:
+  dry_run: false               # Log actions without executing
+  confirm_before:              # Require confirmation for elements matching these
+    - submit
+    - purchase
+    - delete
+    - send
+    - pay
+    - confirm
+    - checkout
+  url_allowlist: []            # Empty = allow all URLs
+  url_blocklist:
+    - "*/admin/*"
+    - "*/settings/delete*"
+    - "*/account/close*"
+  max_actions_per_subgoal: 30
+  ensemble_voting: false       # Multi-model consensus for critical actions
+  ensemble_models:
+    - "phi3:mini"
+    - "llama3.2:3b"
+
+# ── Agent ───────────────────────────────────────────────
+agent:
+  max_steps: 100               # Total steps across all sub-goals
+  max_replans: 3               # Re-planning attempts before giving up
+  validation_confidence_threshold: 0.7
+  action_retry_limit: 2
+  screenshot_mode: "hybrid"    # "hybrid", "screenshot_only", "dom_only"

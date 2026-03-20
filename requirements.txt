@@ -1,0 +1,26 @@
+# Core
+pydantic>=2.0
+pyyaml>=6.0
+httpx>=0.25.0
+rich>=13.0
+
+# Browser automation
+playwright>=1.40.0
+
+# Image processing (screenshot annotation)
+Pillow>=10.0
+
+# CLI
+click>=8.1
+
+# Web dashboard
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# Optional: llama.cpp Python bindings (for grammar-constrained executor)
+# Uncomment if using llama.cpp backend instead of/alongside Ollama
+# llama-cpp-python>=0.2.50
+
+# Development
+pytest>=7.0
+pytest-asyncio>=0.21

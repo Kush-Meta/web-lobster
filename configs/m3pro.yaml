@@ -1,0 +1,55 @@
+# Web Lobster — M3 Pro (18GB) Configuration
+# qwen2.5:7b planner, qwen2.5:3b executor, minicpm-v:8b validator
+
+planner:
+  backend: ollama
+  model: "qwen2.5:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.2
+  max_tokens: 4096
+  timeout: 120.0
+
+executor:
+  backend: ollama
+  model: "qwen2.5:3b"
+  base_url: "http://localhost:11434"
+  temperature: 0.0
+  max_tokens: 256
+  timeout: 20.0
+
+validator:
+  backend: ollama
+  model: "minicpm-v:8b"
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 512
+  timeout: 60.0
+
+browser:
+  headless: false
+  viewport_width: 1280
+  viewport_height: 900
+  default_timeout: 30.0
+  screenshot_quality: 60
+  slow_mo: 0.0
+
+safety:
+  dry_run: false
+  confirm_before:
+    - submit
+    - purchase
+    - delete
+    - send
+    - pay
+  url_allowlist: []
+  url_blocklist:
+    - "*/admin/*"
+  max_actions_per_subgoal: 20
+  ensemble_voting: false
+
+agent:
+  max_steps: 60
+  max_replans: 2
+  validation_confidence_threshold: 0.6
+  action_retry_limit: 2
+  screenshot_mode: "hybrid"

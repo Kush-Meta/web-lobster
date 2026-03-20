@@ -1,0 +1,62 @@
+# Web Lobster — Anthropic Claude Configuration
+# Requires: ANTHROPIC_API_KEY environment variable
+#
+# Cost profile (approximate per task):
+#   Planner   — Sonnet 4.6  (called ~1-3x per task, deep reasoning)
+#   Executor  — Haiku 4.5   (called every step, ~20-60x per task, tool_use enforces valid JSON)
+#   Validator — minicpm-v:8b via local Ollama (vision locally, saves API cost)
+
+planner:
+  backend: anthropic
+  model: "claude-haiku-4-5-20251001"
+  temperature: 0.2
+  max_tokens: 4096
+  timeout: 120.0
+
+executor:
+  backend: anthropic
+  model: "claude-haiku-4-5-20251001"
+  temperature: 0.0
+  max_tokens: 256
+  timeout: 30.0
+
+validator:
+  backend: ollama
+  model: "minicpm-v:8b"
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 512
+  timeout: 60.0
+
+browser:
+  headless: false
+  viewport_width: 1280
+  viewport_height: 900
+  default_timeout: 30.0
+  screenshot_quality: 80
+  slow_mo: 0.0
+
+safety:
+  dry_run: false
+  confirm_before:
+    - submit
+    - purchase
+    - delete
+    - send
+    - pay
+    - confirm
+    - checkout
+  url_allowlist: []
+  url_blocklist:
+    - "*/admin/*"
+    - "*/settings/delete*"
+    - "*/account/close*"
+  max_actions_per_subgoal: 30
+  ensemble_voting: false
+
+agent:
+  max_steps: 100
+  max_replans: 3
+  validation_confidence_threshold: 0.7
+  action_retry_limit: 2
+  screenshot_mode: "hybrid"

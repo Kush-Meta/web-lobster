@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Lobster — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-0:#0c0c0e;--bg-1:#131316;--bg-2:#1a1a1f;--bg-3:#222228;
+  --border:#2a2a32;--border-hi:#3a3a45;
+  --text-0:#e8e6e1;--text-1:#a8a6a0;--text-2:#6a6862;
+  --red:#e8534b;--red-dim:#3a1f1d;
+  --green:#3ecf72;--green-dim:#1a3222;
+  --amber:#e8a33c;--amber-dim:#3a2e18;
+  --blue:#4a9eed;--blue-dim:#1a2a3a;
+  --purple:#9b72e8;--purple-dim:#261e3a;
+  --teal:#3ecfb0;--teal-dim:#1a3a32;
+  --coral:#e87052;
+  --font-sans:'DM Sans',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',monospace;
+  --radius:10px;--radius-sm:6px;--radius-lg:14px;
+}
+html{font-size:14px}
+body{
+  font-family:var(--font-sans);color:var(--text-0);
+  background:var(--bg-0);min-height:100vh;
+  display:flex;flex-direction:column;
+}
+input,select,textarea,button{font-family:inherit;color:inherit;border:none;outline:none;background:none}
+button{cursor:pointer}
+
+/* ── Top bar ─────────────────────────────── */
+.topbar{
+  display:flex;align-items:center;gap:12px;
+  padding:12px 20px;background:var(--bg-1);
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;
+}
+.topbar .logo{display:flex;align-items:center;gap:8px;font-weight:600;font-size:1.1rem;letter-spacing:-0.02em;white-space:nowrap}
+.topbar .logo span{font-size:1.3rem}
+.topbar .phase-badge{
+  font-family:var(--font-mono);font-size:0.75rem;font-weight:500;
+  padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:0.06em;
+  margin-left:auto;
+}
+.phase-idle{background:var(--bg-3);color:var(--text-2)}
+.phase-planning,.phase-replanning{background:var(--purple-dim);color:var(--purple)}
+.phase-observing,.phase-thinking{background:var(--blue-dim);color:var(--blue)}
+.phase-acting{background:var(--amber-dim);color:var(--amber)}
+.phase-validating{background:var(--teal-dim);color:var(--teal)}
+.phase-paused{background:var(--amber-dim);color:var(--amber)}
+.phase-completed{background:var(--green-dim);color:var(--green)}
+.phase-failed{background:var(--red-dim);color:var(--red)}
+.ws-dot{width:8px;height:8px;border-radius:50%;background:var(--red);margin-left:8px;flex-shrink:0;transition:background 0.3s}
+.ws-dot.connected{background:var(--green)}
+.step-counter{font-family:var(--font-mono);font-size:0.8rem;color:var(--text-2);white-space:nowrap}
+.elapsed{font-family:var(--font-mono);font-size:0.8rem;color:var(--text-2);white-space:nowrap}
+
+/* ── Layout ──────────────────────────────── */
+.main{display:grid;grid-template-columns:340px 1fr 300px;grid-template-rows:1fr;flex:1;overflow:hidden}
+@media(max-width:1100px){.main{grid-template-columns:1fr;grid-template-rows:auto}}
+
+/* ── Left panel: Config + Task ───────────── */
+.panel-left{background:var(--bg-1);border-right:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column}
+.panel-section{padding:16px;border-bottom:1px solid var(--border)}
+.panel-section h3{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-2);margin-bottom:10px;font-weight:600}
+
+/* Preset cards */
+.preset-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.preset-card{
+  padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  cursor:pointer;transition:all 0.15s;font-size:0.8rem;
+  display:flex;align-items:center;gap:6px;
+}
+.preset-card:hover{border-color:var(--border-hi);background:var(--bg-2)}
+.preset-card.active{border-color:var(--coral);background:rgba(232,112,82,0.08)}
+.preset-card .icon{font-size:1rem;opacity:0.7}
+
+/* Form inputs */
+.field{margin-bottom:10px}
+.field label{display:block;font-size:0.75rem;color:var(--text-1);margin-bottom:4px;font-weight:500}
+.field input,.field textarea,.field select{
+  width:100%;padding:8px 10px;background:var(--bg-0);border:1px solid var(--border);
+  border-radius:var(--radius-sm);font-size:0.85rem;color:var(--text-0);transition:border-color 0.15s;
+}
+.field input:focus,.field textarea:focus,.field select:focus{border-color:var(--blue)}
+.field textarea{resize:vertical;min-height:70px;font-family:var(--font-sans)}
+.field select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236a6862'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+
+/* Toggle */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:4px 0}
+.toggle-row span{font-size:0.8rem;color:var(--text-1)}
+.toggle{
+  width:36px;height:20px;border-radius:10px;background:var(--bg-3);
+  position:relative;cursor:pointer;transition:background 0.2s;flex-shrink:0;
+}
+.toggle.on{background:var(--green)}
+.toggle::after{
+  content:'';position:absolute;top:3px;left:3px;width:14px;height:14px;
+  border-radius:50%;background:var(--text-0);transition:transform 0.2s;
+}
+.toggle.on::after{transform:translateX(16px)}
+
+/* Model config row */
+.model-row{
+  padding:8px 10px;border-radius:var(--radius-sm);background:var(--bg-0);
+  border:1px solid var(--border);margin-bottom:6px;
+}
+.model-row .role{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-2);font-weight:600;margin-bottom:4px}
+.model-row .model-name{font-family:var(--font-mono);font-size:0.8rem;color:var(--teal)}
+.model-row .backend{font-size:0.7rem;color:var(--text-2);margin-left:6px}
+.model-row input, .model-row select{
+  width:100%;padding:4px 6px;background:var(--bg-1);border:1px solid var(--border);
+  border-radius:4px;font-size:0.8rem;font-family:var(--font-mono);margin-top:4px;color:var(--teal);
+}
+
+/* Controls */
+.controls{display:flex;gap:6px;padding:16px;border-top:1px solid var(--border);margin-top:auto}
+.btn{
+  flex:1;padding:10px;border-radius:var(--radius-sm);font-weight:600;font-size:0.85rem;
+  text-align:center;transition:all 0.15s;border:1px solid transparent;
+}
+.btn-primary{background:var(--coral);color:#fff}
+.btn-primary:hover{background:#d4623a}
+.btn-primary:disabled{background:var(--bg-3);color:var(--text-2);cursor:not-allowed}
+.btn-secondary{background:var(--bg-2);color:var(--text-1);border-color:var(--border)}
+.btn-secondary:hover{background:var(--bg-3);color:var(--text-0)}
+.btn-danger{background:var(--red-dim);color:var(--red);border-color:var(--red)}
+.btn-danger:hover{background:var(--red);color:#fff}
+
+/* ── Center panel: Screenshot + Goals ────── */
+.panel-center{overflow-y:auto;display:flex;flex-direction:column}
+
+.screenshot-container{
+  background:var(--bg-1);border-bottom:1px solid var(--border);
+  min-height:200px;position:relative;display:flex;align-items:center;justify-content:center;
+}
+.screenshot-container img{max-width:100%;max-height:480px;object-fit:contain;display:block}
+.screenshot-placeholder{
+  color:var(--text-2);font-size:0.9rem;text-align:center;padding:60px 20px;
+}
+.screenshot-placeholder .big{font-size:3rem;display:block;margin-bottom:12px;opacity:0.4}
+.screenshot-url{
+  position:absolute;bottom:0;left:0;right:0;padding:6px 12px;
+  background:rgba(12,12,14,0.85);font-family:var(--font-mono);font-size:0.75rem;color:var(--text-1);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  backdrop-filter:blur(8px);
+}
+
+/* Sub-goals progress */
+.goals-panel{padding:16px;flex:1}
+.goals-panel h3{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-2);margin-bottom:10px;font-weight:600}
+.goal-item{
+  display:flex;align-items:flex-start;gap:10px;padding:8px 10px;
+  border-radius:var(--radius-sm);margin-bottom:4px;transition:background 0.15s;
+}
+.goal-item.active{background:var(--bg-2)}
+.goal-dot{
+  width:20px;height:20px;border-radius:50%;border:2px solid var(--border);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  font-size:0.65rem;font-weight:600;margin-top:1px;
+}
+.goal-dot.completed{border-color:var(--green);background:var(--green-dim);color:var(--green)}
+.goal-dot.active{border-color:var(--blue);background:var(--blue-dim);color:var(--blue);animation:pulse 2s infinite}
+.goal-dot.failed{border-color:var(--red);background:var(--red-dim);color:var(--red)}
+.goal-dot.pending{color:var(--text-2)}
+.goal-text{font-size:0.85rem;line-height:1.4}
+.goal-text .criteria{font-size:0.75rem;color:var(--text-2);margin-top:2px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+
+/* ── Right panel: Action log ─────────────── */
+.panel-right{background:var(--bg-1);border-left:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column}
+.action-log{flex:1;overflow-y:auto;padding:8px}
+.action-log h3{
+  font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;
+  color:var(--text-2);padding:8px 8px 6px;font-weight:600;position:sticky;top:0;
+  background:var(--bg-1);z-index:1;
+}
+.log-entry{
+  padding:6px 8px;border-radius:var(--radius-sm);margin-bottom:3px;
+  font-family:var(--font-mono);font-size:0.75rem;line-height:1.4;
+  border-left:2px solid transparent;
+}
+.log-entry .step-num{color:var(--text-2);margin-right:6px}
+.log-entry.act-click{border-left-color:var(--blue);color:var(--blue)}
+.log-entry.act-type{border-left-color:var(--green);color:var(--green)}
+.log-entry.act-scroll{border-left-color:var(--text-2);color:var(--text-1)}
+.log-entry.act-navigate{border-left-color:var(--purple);color:var(--purple)}
+.log-entry.act-wait{border-left-color:var(--amber);color:var(--amber)}
+.log-entry.act-done{border-left-color:var(--teal);color:var(--teal)}
+.log-entry.act-select{border-left-color:var(--coral);color:var(--coral)}
+.log-entry.act-event{border-left-color:var(--text-2);color:var(--text-1);font-style:italic}
+.log-entry .detail{color:var(--text-2);font-weight:300}
+
+/* Validation result in log */
+.validation-entry{
+  padding:8px;border-radius:var(--radius-sm);margin:4px 0;
+  font-size:0.75rem;font-family:var(--font-mono);
+}
+.validation-entry.pass{background:var(--green-dim);color:var(--green);border:1px solid rgba(62,207,114,0.2)}
+.validation-entry.fail{background:var(--red-dim);color:var(--red);border:1px solid rgba(232,83,75,0.2)}
+
+/* ── Confirmation modal ──────────────────── */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;
+  display:none;align-items:center;justify-content:center;
+  backdrop-filter:blur(4px);
+}
+.modal-overlay.visible{display:flex}
+.modal{
+  background:var(--bg-1);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:24px;max-width:440px;width:90%;
+}
+.modal h2{font-size:1rem;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.modal h2 .warn{color:var(--amber);font-size:1.2rem}
+.modal p{font-size:0.85rem;color:var(--text-1);margin-bottom:6px;line-height:1.5}
+.modal .action-detail{
+  font-family:var(--font-mono);font-size:0.85rem;color:var(--coral);
+  background:var(--bg-0);padding:10px;border-radius:var(--radius-sm);margin:12px 0;
+}
+.modal .btn-row{display:flex;gap:8px;margin-top:16px}
+
+/* ── Empty / loading states ──────────────── */
+.empty-state{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:40px;color:var(--text-2);text-align:center;flex:1;
+}
+.empty-state .icon{font-size:2.5rem;margin-bottom:12px;opacity:0.4}
+.empty-state p{font-size:0.85rem;max-width:260px;line-height:1.5}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg-3);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border-hi)}
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="logo"><span>🦞</span> Web Lobster</div>
+  <span class="step-counter" id="stepCounter"></span>
+  <span class="elapsed" id="elapsed"></span>
+  <div class="phase-badge phase-idle" id="phaseBadge">idle</div>
+  <div class="ws-dot" id="wsDot" title="WebSocket status"></div>
+</div>
+
+<!-- Main layout -->
+<div class="main">
+
+  <!-- LEFT: Config & Task -->
+  <div class="panel-left">
+    <!-- Task presets -->
+    <div class="panel-section">
+      <h3>Task</h3>
+      <div class="preset-grid" id="taskPresets"></div>
+    </div>
+
+    <!-- Task variables (filled dynamically) -->
+    <div class="panel-section" id="taskVarsSection" style="display:none">
+      <h3>Parameters</h3>
+      <div id="taskVarsContainer"></div>
+    </div>
+
+    <!-- Custom task input -->
+    <div class="panel-section">
+      <div class="field">
+        <label>Task description</label>
+        <textarea id="taskInput" placeholder="Describe what you want the agent to do..."></textarea>
+      </div>
+      <div class="field">
+        <label>Start URL</label>
+        <input id="startUrl" type="text" value="https://www.google.com" placeholder="https://...">
+      </div>
+    </div>
+
+    <!-- Model config -->
+    <div class="panel-section">
+      <h3>Models</h3>
+      <div class="preset-grid" id="modelPresets" style="margin-bottom:10px"></div>
+      <div class="model-row">
+        <div class="role">Planner</div>
+        <input id="cfgPlannerModel" value="qwen2.5:72b" placeholder="model name or path">
+      </div>
+      <div class="model-row">
+        <div class="role">Executor</div>
+        <input id="cfgExecutorModel" value="qwen2.5:7b" placeholder="model name or path">
+      </div>
+      <div class="model-row">
+        <div class="role">Validator</div>
+        <input id="cfgValidatorModel" value="minicpm-v:8b" placeholder="model name or path">
+      </div>
+    </div>
+
+    <!-- Safety -->
+    <div class="panel-section">
+      <h3>Safety</h3>
+      <div class="toggle-row"><span>Dry run</span><div class="toggle" id="toggleDryRun" onclick="toggleSetting(this)"></div></div>
+      <div class="toggle-row"><span>Headless browser</span><div class="toggle" id="toggleHeadless" onclick="toggleSetting(this)"></div></div>
+      <div class="toggle-row"><span>Ensemble voting</span><div class="toggle" id="toggleEnsemble" onclick="toggleSetting(this)"></div></div>
+      <div class="field" style="margin-top:8px">
+        <label>Max steps</label>
+        <input id="cfgMaxSteps" type="number" value="100" min="1" max="500">
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button class="btn btn-primary" id="btnStart" onclick="startAgent()">Start</button>
+      <button class="btn btn-secondary" id="btnPause" onclick="pauseAgent()" style="display:none">Pause</button>
+      <button class="btn btn-secondary" id="btnResume" onclick="resumeAgent()" style="display:none">Resume</button>
+      <button class="btn btn-danger" id="btnStop" onclick="stopAgent()" style="display:none">Stop</button>
+    </div>
+  </div>
+
+  <!-- CENTER: Screenshot + Goals -->
+  <div class="panel-center">
+    <div class="screenshot-container" id="screenshotContainer">
+      <div class="screenshot-placeholder" id="screenshotPlaceholder">
+        <span class="big">🦞</span>
+        Choose a task and click Start to begin
+      </div>
+      <img id="screenshotImg" style="display:none" alt="Browser screenshot">
+      <div class="screenshot-url" id="screenshotUrl" style="display:none"></div>
+    </div>
+    <div class="goals-panel">
+      <h3>Sub-goals</h3>
+      <div id="goalsList">
+        <div class="empty-state">
+          <div class="icon">📋</div>
+          <p>Sub-goals will appear here once the planner decomposes your task</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Action log -->
+  <div class="panel-right">
+    <div class="action-log" id="actionLog">
+      <h3>Action log</h3>
+      <div class="empty-state" id="logEmpty">
+        <div class="icon">📡</div>
+        <p>Live actions will stream here</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Confirmation modal -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <h2><span class="warn">⚠</span> Safety check</h2>
+    <p id="confirmReason"></p>
+    <div class="action-detail" id="confirmDetail"></div>
+    <p style="font-size:0.8rem;color:var(--text-2)">The agent wants to perform this action. Do you approve?</p>
+    <div class="btn-row">
+      <button class="btn btn-danger" onclick="confirmAction(false)" style="flex:1">Decline</button>
+      <button class="btn btn-primary" onclick="confirmAction(true)" style="flex:1">Approve</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────
+let ws = null;
+let currentPhase = 'idle';
+let selectedTaskPreset = null;
+let selectedModelPreset = null;
+let taskPresets = [];
+let modelPresets = [];
+let elapsedInterval = null;
+let startTime = null;
+
+// ── WebSocket ────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById('wsDot').classList.add('connected');
+  };
+
+  ws.onclose = () => {
+    document.getElementById('wsDot').classList.remove('connected');
+    setTimeout(connectWS, 2000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    handleEvent(msg);
+  };
+}
+
+function handleEvent(msg) {
+  const {type, data} = msg;
+
+  switch(type) {
+    case 'state_sync':
+      syncState(data);
+      break;
+    case 'task_start':
+      setPhase('planning');
+      startTime = Date.now();
+      startElapsedTimer();
+      showRunningControls();
+      break;
+    case 'plan_ready':
+      renderGoals(data.sub_goals);
+      break;
+    case 'subgoal_start':
+      setPhase('observing');
+      highlightGoal(data.id, 'active');
+      addLogEntry('event', `▸ Sub-goal ${data.id}: ${data.goal}`);
+      break;
+    case 'observation':
+      setPhase('thinking');
+      if (data.screenshot) updateScreenshot(data.screenshot);
+      if (data.url) updateUrl(data.url);
+      break;
+    case 'action':
+      setPhase('acting');
+      addActionLog(data);
+      updateStepCounter(data.step);
+      break;
+    case 'action_result':
+      setPhase('observing');
+      break;
+    case 'validation':
+      setPhase('validating');
+      addValidationLog(data);
+      break;
+    case 'subgoal_complete':
+      highlightGoal(data.id, 'completed');
+      addLogEntry('event', `✓ Completed: ${data.goal}`);
+      break;
+    case 'subgoal_failed':
+      highlightGoal(data.id, 'failed');
+      addLogEntry('event', `✗ Failed: ${data.goal}`);
+      break;
+    case 'replan':
+      setPhase('replanning');
+      addLogEntry('event', `↻ Re-planning with ${data.new_goals.length} new goals`);
+      break;
+    case 'task_complete':
+      setPhase(data.success ? 'completed' : 'failed');
+      addLogEntry('event', data.success ? '✓ Task completed' : '✗ Task failed');
+      stopElapsedTimer();
+      showIdleControls();
+      break;
+    case 'confirm_request':
+      showConfirmModal(data);
+      break;
+    case 'safety_flag':
+      addLogEntry('event', `⚠ Safety: ${data.reason}`);
+      break;
+    case 'paused':
+      setPhase('paused');
+      break;
+    case 'resumed':
+      setPhase('acting');
+      break;
+    case 'stopped':
+      setPhase('idle');
+      stopElapsedTimer();
+      showIdleControls();
+      break;
+  }
+}
+
+// ── Phase & UI updates ───────────────────────────────
+function setPhase(phase) {
+  currentPhase = phase;
+  const badge = document.getElementById('phaseBadge');
+  badge.textContent = phase;
+  badge.className = 'phase-badge phase-' + phase;
+}
+
+function updateStepCounter(step) {
+  const max = parseInt(document.getElementById('cfgMaxSteps').value) || 100;
+  document.getElementById('stepCounter').textContent = `Step ${step}/${max}`;
+}
+
+function startElapsedTimer() {
+  stopElapsedTimer();
+  elapsedInterval = setInterval(() => {
+    if (startTime) {
+      const s = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      document.getElementById('elapsed').textContent = `${m}:${String(sec).padStart(2,'0')}`;
+    }
+  }, 1000);
+}
+
+function stopElapsedTimer() {
+  if (elapsedInterval) clearInterval(elapsedInterval);
+}
+
+function showRunningControls() {
+  document.getElementById('btnStart').style.display = 'none';
+  document.getElementById('btnPause').style.display = '';
+  document.getElementById('btnStop').style.display = '';
+  document.getElementById('btnResume').style.display = 'none';
+}
+
+function showIdleControls() {
+  document.getElementById('btnStart').style.display = '';
+  document.getElementById('btnPause').style.display = 'none';
+  document.getElementById('btnStop').style.display = 'none';
+  document.getElementById('btnResume').style.display = 'none';
+}
+
+function syncState(data) {
+  if (data.phase) setPhase(data.phase);
+  if (data.step_count) updateStepCounter(data.step_count);
+  if (data.plan) renderGoals(data.plan.sub_goals);
+  if (data.action_log) data.action_log.forEach(a => addActionLog(a));
+  if (data.phase !== 'idle' && data.phase !== 'completed' && data.phase !== 'failed') {
+    showRunningControls();
+    startTime = Date.now() - (data.elapsed || 0) * 1000;
+    startElapsedTimer();
+  }
+}
+
+// ── Screenshot ───────────────────────────────────────
+function updateScreenshot(b64) {
+  const img = document.getElementById('screenshotImg');
+  const placeholder = document.getElementById('screenshotPlaceholder');
+  img.src = 'data:image/jpeg;base64,' + b64;
+  img.style.display = 'block';
+  placeholder.style.display = 'none';
+}
+
+function updateUrl(url) {
+  const el = document.getElementById('screenshotUrl');
+  el.textContent = url;
+  el.style.display = '';
+}
+
+// ── Goals ────────────────────────────────────────────
+function renderGoals(goals) {
+  const container = document.getElementById('goalsList');
+  if (!goals || goals.length === 0) return;
+  container.innerHTML = goals.map(g => `
+    <div class="goal-item" id="goal-${g.id}">
+      <div class="goal-dot ${g.status || 'pending'}">${g.id}</div>
+      <div class="goal-text">
+        ${g.goal}
+        ${g.criteria ? `<div class="criteria">${g.criteria}</div>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function highlightGoal(id, status) {
+  const el = document.getElementById('goal-' + id);
+  if (!el) return;
+  el.className = 'goal-item' + (status === 'active' ? ' active' : '');
+  const dot = el.querySelector('.goal-dot');
+  if (dot) dot.className = 'goal-dot ' + status;
+}
+
+// ── Action log ───────────────────────────────────────
+function addActionLog(data) {
+  const logEmpty = document.getElementById('logEmpty');
+  if (logEmpty) logEmpty.remove();
+  const log = document.getElementById('actionLog');
+  const cls = 'act-' + (data.action || 'event');
+  let detail = '';
+  if (data.element_id != null) detail += `[${data.element_id}]`;
+  if (data.text) detail += ` "${data.text.substring(0, 40)}"`;
+  if (data.url) detail += ` ${data.url.substring(0, 50)}`;
+  if (data.reason) detail += ` (${data.reason})`;
+
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${cls}`;
+  entry.innerHTML = `<span class="step-num">${data.step || ''}</span>${data.action || ''}${detail ? ` <span class="detail">${detail}</span>` : ''}`;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addLogEntry(type, text) {
+  const logEmpty = document.getElementById('logEmpty');
+  if (logEmpty) logEmpty.remove();
+  const log = document.getElementById('actionLog');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry act-event';
+  entry.textContent = text;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addValidationLog(data) {
+  const log = document.getElementById('actionLog');
+  const entry = document.createElement('div');
+  entry.className = `validation-entry ${data.achieved ? 'pass' : 'fail'}`;
+  entry.innerHTML = `${data.achieved ? '✓' : '✗'} Validation: ${data.observation || ''} <span class="detail">(${Math.round(data.confidence * 100)}%)</span>`;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Presets ──────────────────────────────────────────
+async function loadPresets() {
+  try {
+    const [tasksRes, modelsRes] = await Promise.all([
+      fetch('/api/presets/tasks'), fetch('/api/presets/models')
+    ]);
+    taskPresets = await tasksRes.json();
+    modelPresets = await modelsRes.json();
+  } catch(e) {
+    // Fallback: empty
+    taskPresets = [];
+    modelPresets = [];
+  }
+  renderTaskPresets();
+  renderModelPresets();
+}
+
+function renderTaskPresets() {
+  const grid = document.getElementById('taskPresets');
+  grid.innerHTML = taskPresets.map(p => `
+    <div class="preset-card" data-id="${p.id}" onclick="selectTaskPreset('${p.id}')">
+      <span class="icon">${getIcon(p.icon)}</span>${p.name}
+    </div>
+  `).join('');
+}
+
+function renderModelPresets() {
+  const grid = document.getElementById('modelPresets');
+  grid.innerHTML = modelPresets.map(p => `
+    <div class="preset-card" data-id="${p.id}" onclick="selectModelPreset('${p.id}')" title="${p.description}">
+      <span class="icon">${getIcon(p.icon)}</span>${p.name}
+    </div>
+  `).join('');
+}
+
+function selectTaskPreset(id) {
+  selectedTaskPreset = taskPresets.find(p => p.id === id);
+  // Highlight
+  document.querySelectorAll('#taskPresets .preset-card').forEach(c =>
+    c.classList.toggle('active', c.dataset.id === id));
+  if (!selectedTaskPreset) return;
+
+  // Show variables
+  const vars = selectedTaskPreset.variables || [];
+  const section = document.getElementById('taskVarsSection');
+  const container = document.getElementById('taskVarsContainer');
+  if (vars.length > 0) {
+    section.style.display = '';
+    container.innerHTML = vars.map(v => `
+      <div class="field">
+        <label>${v.label}</label>
+        <input data-var="${v.name}" placeholder="${v.placeholder || ''}" value="${v.placeholder || ''}">
+      </div>
+    `).join('');
+  } else {
+    section.style.display = 'none';
+  }
+
+  // Fill task and URL
+  document.getElementById('taskInput').value = selectedTaskPreset.task;
+  if (selectedTaskPreset.start_url) {
+    document.getElementById('startUrl').value = selectedTaskPreset.start_url;
+  }
+}
+
+function selectModelPreset(id) {
+  selectedModelPreset = modelPresets.find(p => p.id === id);
+  document.querySelectorAll('#modelPresets .preset-card').forEach(c =>
+    c.classList.toggle('active', c.dataset.id === id));
+  if (!selectedModelPreset) return;
+  document.getElementById('cfgPlannerModel').value = selectedModelPreset.planner.model;
+  document.getElementById('cfgExecutorModel').value = selectedModelPreset.executor.model;
+  document.getElementById('cfgValidatorModel').value = selectedModelPreset.validator.model;
+}
+
+function getIcon(name) {
+  const icons = {
+    search:'🔍', plane:'✈️', scale:'⚖️', briefcase:'💼', book:'📖',
+    edit:'✏️', tag:'🏷️', terminal:'🖥️', zap:'⚡', sliders:'🎛️',
+    feather:'🪶', cpu:'💻', layers:'📚', shield:'🛡️'
+  };
+  return icons[name] || '•';
+}
+
+// ── Build final task string with variables ───────────
+function buildTask() {
+  let task = document.getElementById('taskInput').value;
+  // Replace {var} placeholders with values from the variable inputs
+  document.querySelectorAll('#taskVarsContainer input[data-var]').forEach(input => {
+    const name = input.dataset.var;
+    const val = input.value || input.placeholder;
+    task = task.replace(`{${name}}`, val);
+  });
+  return task;
+}
+
+// ── Toggle helpers ───────────────────────────────────
+function toggleSetting(el) {
+  el.classList.toggle('on');
+}
+
+// ── Agent control ────────────────────────────────────
+async function startAgent() {
+  const task = buildTask();
+  if (!task.trim()) return alert('Please enter a task description.');
+
+  // Update config first
+  await fetch('/api/config', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      planner: { model: document.getElementById('cfgPlannerModel').value },
+      executor: { model: document.getElementById('cfgExecutorModel').value },
+      validator: { model: document.getElementById('cfgValidatorModel').value },
+      safety: {
+        dry_run: document.getElementById('toggleDryRun').classList.contains('on'),
+        ensemble_voting: document.getElementById('toggleEnsemble').classList.contains('on'),
+      },
+      browser: {
+        headless: document.getElementById('toggleHeadless').classList.contains('on'),
+      },
+      agent: {
+        max_steps: parseInt(document.getElementById('cfgMaxSteps').value) || 100,
+      },
+    }),
+  });
+
+  // Clear previous state
+  document.getElementById('goalsList').innerHTML = '<div class="empty-state"><div class="icon">📋</div><p>Planning...</p></div>';
+  document.getElementById('actionLog').innerHTML = '<h3>Action log</h3>';
+  document.getElementById('screenshotImg').style.display = 'none';
+  document.getElementById('screenshotPlaceholder').style.display = '';
+  document.getElementById('screenshotUrl').style.display = 'none';
+
+  // Start
+  await fetch('/api/agent/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      task: task,
+      start_url: document.getElementById('startUrl').value || 'https://www.google.com',
+    }),
+  });
+}
+
+async function pauseAgent() {
+  await fetch('/api/agent/pause', {method: 'POST'});
+  document.getElementById('btnPause').style.display = 'none';
+  document.getElementById('btnResume').style.display = '';
+}
+
+async function resumeAgent() {
+  await fetch('/api/agent/resume', {method: 'POST'});
+  document.getElementById('btnResume').style.display = 'none';
+  document.getElementById('btnPause').style.display = '';
+}
+
+async function stopAgent() {
+  await fetch('/api/agent/stop', {method: 'POST'});
+}
+
+// ── Confirmation modal ───────────────────────────────
+function showConfirmModal(data) {
+  document.getElementById('confirmReason').textContent = data.reason;
+  document.getElementById('confirmDetail').textContent =
+    `${data.action}${data.element_id != null ? ` [${data.element_id}]` : ''}${data.text ? ` "${data.text}"` : ''}`;
+  document.getElementById('confirmModal').classList.add('visible');
+}
+
+async function confirmAction(approved) {
+  document.getElementById('confirmModal').classList.remove('visible');
+  await fetch('/api/agent/confirm', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({approved}),
+  });
+}
+
+// ── Init ─────────────────────────────────────────────
+loadPresets();
+connectWS();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-lobster"
+version = "0.1.0"
+description = "Autonomous web agent powered by open-source AI models"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "httpx>=0.25.0",
+    "rich>=13.0",
+    "playwright>=1.40.0",
+    "Pillow>=10.0",
+    "click>=8.1",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "anthropic>=0.40.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+llamacpp = ["llama-cpp-python>=0.2.50"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+web-lobster = "web_lobster.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["web_lobster*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

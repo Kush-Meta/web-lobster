@@ -1,0 +1,29 @@
+# Web Lobster — Action Grammar (GBNF)
+# Used by llama.cpp to constrain the executor model's output
+# to valid action JSON. This eliminates parsing errors entirely.
+#
+# Usage with llama.cpp CLI:
+#   llama-cli -m model.gguf --grammar-file action.gbnf -p "..."
+#
+# Usage with llama-cpp-python:
+#   from llama_cpp import LlamaGrammar
+#   grammar = LlamaGrammar.from_file("action.gbnf")
+#   output = llm("prompt", grammar=grammar)
+
+root        ::= "{" ws action ws "}"
+ws          ::= [ \t\n]*
+
+action      ::= click | type-action | scroll | navigate | wait | done | select | hover | go-back
+
+click       ::= "\"action\":" ws "\"click\"," ws "\"element_id\":" ws number
+type-action ::= "\"action\":" ws "\"type\"," ws "\"element_id\":" ws number "," ws "\"text\":" ws string
+scroll      ::= "\"action\":" ws "\"scroll\"," ws "\"direction\":" ws ("\"up\"" | "\"down\"")
+navigate    ::= "\"action\":" ws "\"navigate\"," ws "\"url\":" ws string
+wait        ::= "\"action\":" ws "\"wait\"," ws "\"seconds\":" ws number
+done        ::= "\"action\":" ws "\"done\"," ws "\"reason\":" ws string
+select      ::= "\"action\":" ws "\"select\"," ws "\"element_id\":" ws number "," ws "\"text\":" ws string
+hover       ::= "\"action\":" ws "\"hover\"," ws "\"element_id\":" ws number
+go-back     ::= "\"action\":" ws "\"go_back\""
+
+number      ::= [0-9]+
+string      ::= "\"" ([^"\\] | "\\" ["\\/bfnrt])* "\""
