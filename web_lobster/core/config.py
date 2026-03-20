@@ -106,6 +106,11 @@ class WebLobsterConfig(BaseModel):
         data["planner"].update(backend="anthropic", model=haiku)
         data["executor"].update(backend="anthropic", model=haiku)
         data["validator"].update(backend="anthropic", model=haiku)
+        # Anthropic is faster than local Ollama; raise the per-subgoal action
+        # cap to give the agent more room on complex UIs like Google Flights.
+        data["safety"]["max_actions_per_subgoal"] = max(
+            data["safety"]["max_actions_per_subgoal"], 30
+        )
         return WebLobsterConfig(**data)
 
     @classmethod

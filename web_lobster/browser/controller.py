@@ -110,9 +110,15 @@ class BrowserController:
         if element_id is None:
             raise ValueError("type requires element_id")
         locator = self._get_locator(element_id)
-        # Clear existing content first, then type
         await locator.click(timeout=self.config.default_timeout * 1000)
-        await locator.fill(text)
+        # Select-all then delete clears pre-filled content in custom
+        # components (e.g. Google Flights' React comboboxes).
+        await self._page.keyboard.press("Meta+a")
+        await self._page.keyboard.press("Control+a")
+        await self._page.keyboard.press("Backspace")
+        # Type to whichever element currently holds focus so that JS
+        # autocomplete listeners (keydown/keypress/input) fire correctly.
+        await self._page.keyboard.type(text, delay=60)
 
     async def _scroll(self, direction: ScrollDirection) -> None:
         delta = -500 if direction == ScrollDirection.UP else 500
