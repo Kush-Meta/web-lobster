@@ -72,26 +72,26 @@ class TestSafetyGate:
 
 class TestStuckDetector:
     def test_not_stuck_initially(self):
-        detector = StuckDetector(window_size=3)
+        detector = StuckDetector()
         assert detector.is_stuck() is False
 
     def test_detects_repetitive_state(self):
-        detector = StuckDetector(window_size=3)
-        for _ in range(5):
-            detector.record("https://example.com", 10, "click")
+        detector = StuckDetector(repeat_threshold=3)
+        for _ in range(3):
+            detector.record("click", 14, "https://example.com")
         assert detector.is_stuck() is True
 
     def test_not_stuck_with_variety(self):
-        detector = StuckDetector(window_size=3)
-        detector.record("https://example.com/a", 10, "click")
-        detector.record("https://example.com/b", 15, "type")
-        detector.record("https://example.com/c", 20, "click")
+        detector = StuckDetector()
+        detector.record("click", 10, "https://example.com/a")
+        detector.record("type", 15, "https://example.com/b")
+        detector.record("click", 20, "https://example.com/c")
         assert detector.is_stuck() is False
 
     def test_reset(self):
-        detector = StuckDetector(window_size=3)
-        for _ in range(5):
-            detector.record("https://example.com", 10, "click")
+        detector = StuckDetector(repeat_threshold=3)
+        for _ in range(3):
+            detector.record("click", 14, "https://example.com")
         assert detector.is_stuck() is True
         detector.reset()
         assert detector.is_stuck() is False

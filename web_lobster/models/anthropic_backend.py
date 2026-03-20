@@ -187,6 +187,7 @@ class AnthropicBackend(ModelBackend):
         self,
         prompt: str,
         system: Optional[str] = None,
+        images: Optional[list[str]] = None,
         temperature: float = 0.0,
         max_tokens: int = 256,
     ) -> Action:
@@ -199,18 +200,31 @@ class AnthropicBackend(ModelBackend):
         """
         client = self._get_client()
 
+        # Build content: annotated screenshot first (if available), then text prompt
+        if images:
+            content: list = []
+            for b64 in images:
+                media_type = "image/jpeg" if b64.startswith("/9j/") else "image/png"
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64},
+                })
+            content.append({"type": "text", "text": prompt})
+        else:
+            content = prompt
+
         kwargs: dict = {
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "tools": [DECIDE_ACTION_TOOL],
             "tool_choice": {"type": "tool", "name": "decide_action"},
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
         if system:
             kwargs["system"] = system
 
-        logger.debug("anthropic_decide_action", model=self.model, prompt_len=len(prompt))
+        logger.debug("anthropic_decide_action", model=self.model, prompt_len=len(prompt), has_image=bool(images))
 
         response = await client.messages.create(**kwargs)
 

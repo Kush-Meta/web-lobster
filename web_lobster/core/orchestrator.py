@@ -39,7 +39,8 @@ from web_lobster.models.llamacpp_backend import LlamaCppBackend
 from web_lobster.models.anthropic_backend import AnthropicBackend
 from web_lobster.browser.controller import BrowserController
 from web_lobster.actions.safety import SafetyGate
-from web_lobster.utils.logging import get_logger
+from web_lobster.memory.task_memory import TaskMemory, TaskRecord
+from web_lobster.utils.logging import get_logger, TaskDisplay
 from web_lobster.utils.retry import StuckDetector, retry_async
 
 logger = get_logger("orchestrator")
@@ -76,6 +77,12 @@ class Orchestrator:
 
         # Agent state
         self.state = AgentState(max_steps=config.agent.max_steps)
+
+        # Episodic memory — persists across runs, improves planning over time
+        self.memory = TaskMemory()
+
+        # Live terminal display (CLI only, not used when UI is attached)
+        self.display = TaskDisplay()
 
         # UI shared state (optional — None when running from CLI)
         self.ui = shared_state
@@ -126,19 +133,34 @@ class Orchestrator:
         start_time = time.time()
         await self._ui_emit("on_task_start", task)
 
+        # Retrieve relevant past experiences before planning
+        memory_context = self.memory.format_for_prompt(task)
+        memory_hits = len(self.memory.find_similar(task)) if memory_context else 0
+        if memory_context:
+            logger.info("memory_context", hits=memory_hits)
+
+        # Start live display (CLI mode only)
+        if not self.ui:
+            self.display.start(task, self.config.agent.max_steps, memory_hits)
+
         try:
             # 1. Launch browser
             await self.browser.start(start_url)
 
-            # 2. Plan the task
+            # 2. Plan the task (informed by episodic memory)
             plan = await retry_async(
                 self.planner.plan, task,
+                memory_context,
                 max_retries=2,
                 base_delay=2.0,
             )
             self.state.plan = plan
             logger.info("plan_ready", sub_goals=len(plan.sub_goals))
             await self._ui_emit("on_plan_ready", plan)
+            if not self.ui:
+                self.display.update_plan([
+                    ("pending", sg.goal) for sg in plan.sub_goals
+                ])
 
             # 3. Execute sub-goals via while loop so replanning works correctly.
             # A for loop holds a reference to the original list and misses new goals
@@ -158,6 +180,8 @@ class Orchestrator:
                     sub_goal.status = SubGoalStatus.COMPLETED
                     logger.success("subgoal_complete", id=sub_goal.id)
                     await self._ui_emit("on_subgoal_complete", sub_goal)
+                    if not self.ui:
+                        self._refresh_display()
                 else:
                     if self.state.replan_count < self.state.max_replans:
                         logger.warning("subgoal_failed_replanning", id=sub_goal.id)
@@ -178,14 +202,15 @@ class Orchestrator:
                 logger.warning("step_budget_exhausted", steps=self.state.step_count)
 
             # 4. Extract the answer from the final page state.
-            # Run even on partial success — if the agent navigated to the right page,
-            # the answer is there regardless of whether every sub-goal was ticked off.
             answer = None
             if self.state.current_observation:
                 answer = await self._extract_answer(task, self.state.current_observation)
 
-            # 5. Determine final result
+            # 5. Learn from this run and save to episodic memory
             elapsed = time.time() - start_time
+            await self._save_to_memory(task, plan, answer, elapsed)
+
+            # 6. Determine final result
             result = AgentResult(
                 success=plan.is_complete,
                 task=task,
@@ -194,6 +219,7 @@ class Orchestrator:
                 elapsed_seconds=elapsed,
                 final_url=self.browser.current_url,
                 answer=answer,
+                memory_hits=memory_hits,
             )
 
             if result.success:
@@ -214,19 +240,18 @@ class Orchestrator:
                 error=str(e),
             )
         finally:
+            if not self.ui:
+                self.display.stop()
             await self.browser.close()
 
     async def _execute_subgoal(self, sub_goal) -> bool:
-        """Run the agent loop for a single sub-goal.
-
-        Returns True if the sub-goal was achieved.
-        """
+        """Run the Observe → Reflect → Act loop for a single sub-goal."""
         self.safety.reset_counter()
         self.stuck_detector.reset()
+        reflection: Optional[str] = None  # Carries failure diagnosis into next attempt
 
         for attempt in range(sub_goal.max_attempts):
             sub_goal.attempts = attempt + 1
-
             action_count_this_attempt = 0
             max_actions = self.config.safety.max_actions_per_subgoal
 
@@ -234,43 +259,37 @@ class Orchestrator:
                 self.state.step_count += 1
                 action_count_this_attempt += 1
 
-                # --- PAUSE CHECK ---
                 await self._ui_wait_if_paused()
 
                 # --- OBSERVE ---
-                include_screenshot = (
-                    self.config.agent.screenshot_mode != "dom_only"
-                )
+                include_screenshot = self.config.agent.screenshot_mode != "dom_only"
                 observation = await self.browser.observer.observe(
                     include_screenshot=include_screenshot
                 )
                 self.state.current_observation = observation
                 await self._ui_emit("on_observation", observation)
 
-                # --- THINK (executor decides action) ---
+                # --- THINK: executor with visual grounding + reflection context ---
                 action = await self.executor.decide(
                     observation=observation,
                     sub_goal=sub_goal,
                     action_history_text=self.state.action_history_summary(),
                     actions_taken_this_subgoal=action_count_this_attempt - 1,
+                    reflection=reflection,
                 )
 
-                # --- CHECK for terminal action ---
+                # --- TERMINAL: done ---
                 if action.action == ActionType.DONE:
                     self.state.action_history.append(action)
                     await self._ui_emit("on_action", action, self.state.step_count)
-                    # Validate the sub-goal
                     result = await self.validator.validate(observation, sub_goal)
                     await self._ui_emit("on_validation", result, sub_goal)
                     if result.achieved and result.confidence >= self.config.agent.validation_confidence_threshold:
                         return True
                     else:
-                        logger.warning(
-                            "validation_failed",
-                            confidence=result.confidence,
-                            observation=result.observation[:80],
-                        )
-                        break  # retry the sub-goal
+                        logger.warning("validation_failed", confidence=result.confidence,
+                                       observation=result.observation[:80])
+                        break
 
                 # --- SAFETY CHECK ---
                 verdict = self.safety.check(action, observation)
@@ -293,13 +312,16 @@ class Orchestrator:
                         continue
 
                 # --- ACT ---
-                logger.step(
-                    self.state.step_count,
-                    self.state.max_steps,
-                    f"{action.action.value}",
-                    element=action.element_id,
-                    text=action.text[:30] if action.text else None,
-                )
+                action_desc = action.action.value
+                if action.element_id:
+                    action_desc += f"(el={action.element_id})"
+                if action.text:
+                    action_desc += f' "{action.text[:25]}"'
+                logger.step(self.state.step_count, self.state.max_steps, action_desc)
+                if not self.ui:
+                    self.display.update_action(
+                        self.state.step_count, action_desc, observation.url
+                    )
                 await self._ui_emit("on_action", action, self.state.step_count)
                 success = await self.browser.execute(action)
                 self.state.action_history.append(action)
@@ -308,18 +330,30 @@ class Orchestrator:
                 if not success:
                     logger.warning("action_execution_failed", action=action.action.value)
 
-                # --- STUCK DETECTION ---
+                # --- STUCK DETECTION with smarter tracking ---
                 self.stuck_detector.record(
-                    observation.url,
-                    len(observation.elements),
                     action.action.value,
+                    action.element_id,
+                    observation.url,
                 )
                 if self.stuck_detector.is_stuck():
-                    logger.warning("stuck_detected", steps=action_count_this_attempt)
-                    break  # break to retry the sub-goal
+                    logger.warning("stuck_detected", attempt=attempt + 1)
+                    # Reflect on why we're stuck before the next attempt
+                    try:
+                        reflection = await self.executor.reflect(
+                            observation=observation,
+                            sub_goal=sub_goal,
+                            failed_actions=self.stuck_detector.get_failed_actions(),
+                        )
+                        logger.info("reflection_ready", text=reflection[:80])
+                    except Exception:
+                        reflection = None
+                    self.stuck_detector.reset()
+                    break
 
-            # After exhausting actions, check if we're actually done
+            # After action budget exhausted, check if sub-goal is actually done
             observation = await self.browser.observer.observe(include_screenshot=True)
+            self.state.current_observation = observation
             result = await self.validator.validate(observation, sub_goal)
             await self._ui_emit("on_validation", result, sub_goal)
             if result.achieved and result.confidence >= self.config.agent.validation_confidence_threshold:
@@ -394,6 +428,60 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             logger.error("replan_error", error=str(e))
             return False
 
+    def _refresh_display(self) -> None:
+        """Sync the Rich live display with current plan state."""
+        status_map = {
+            SubGoalStatus.COMPLETED: "completed",
+            SubGoalStatus.FAILED: "failed",
+            SubGoalStatus.ACTIVE: "active",
+            SubGoalStatus.PENDING: "pending",
+            SubGoalStatus.SKIPPED: "skipped",
+        }
+        if self.state.plan:
+            self.display.update_plan([
+                (status_map.get(sg.status, "pending"), sg.goal)
+                for sg in self.state.plan.sub_goals
+            ])
+
+    async def _save_to_memory(
+        self,
+        task: str,
+        plan: TaskPlan,
+        answer: Optional[str],
+        elapsed: float,
+    ) -> None:
+        """Extract learnings and persist this run to episodic memory."""
+        completed = [sg for sg in plan.sub_goals if sg.status == SubGoalStatus.COMPLETED]
+        failed = [sg for sg in plan.sub_goals if sg.status == SubGoalStatus.FAILED]
+
+        learnings = None
+        try:
+            learnings = await self.planner.extract_learnings(
+                task=task,
+                completed_goals=completed,
+                failed_goals=failed,
+                answer=answer,
+            )
+        except Exception as e:
+            logger.warning("learnings_extraction_failed", error=str(e))
+
+        record = TaskRecord(
+            task=task,
+            success=plan.is_complete,
+            final_url=self.browser.current_url,
+            steps_taken=self.state.step_count,
+            elapsed_seconds=elapsed,
+            timestamp=time.time(),
+            sub_goals=[sg.goal for sg in plan.sub_goals],
+            completed_goals=[sg.goal for sg in completed],
+            replanned_goals=[
+                sg.goal for sg in plan.sub_goals if sg.status == SubGoalStatus.SKIPPED
+            ],
+            answer=answer,
+            learnings=learnings,
+        )
+        self.memory.save(record)
+
     async def _request_confirmation(self, action: Action, reason: str) -> bool:
         """Request user confirmation for a high-risk action.
 
@@ -420,6 +508,7 @@ class AgentResult:
         final_url: str = "",
         error: Optional[str] = None,
         answer: Optional[str] = None,
+        memory_hits: int = 0,
     ):
         self.success = success
         self.task = task
@@ -429,6 +518,7 @@ class AgentResult:
         self.final_url = final_url
         self.error = error
         self.answer = answer
+        self.memory_hits = memory_hits
 
     def summary(self) -> str:
         status = "✓ SUCCESS" if self.success else "✗ FAILED"
@@ -440,6 +530,8 @@ class AgentResult:
             f"  Time: {self.elapsed_seconds:.1f}s",
             f"  Final URL: {self.final_url}",
         ]
+        if self.memory_hits:
+            lines.append(f"  Memory: {self.memory_hits} similar past task(s) used")
         if self.error:
             lines.append(f"  Error: {self.error}")
         if self.plan:

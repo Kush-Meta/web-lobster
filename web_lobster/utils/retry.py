@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+from collections import Counter
 from typing import Any, Callable, Optional, TypeVar
 
 from web_lobster.utils.logging import get_logger
@@ -75,34 +76,55 @@ async def retry_async(
 
 
 class StuckDetector:
-    """Detects when the agent is stuck in a loop.
+    """Detects when the agent is stuck in a meaningless loop.
 
-    Tracks recent observations (URLs + element counts) and flags
-    when the state hasn't meaningfully changed across multiple steps.
+    Tracks (action_type, element_id) pairs. Fires only when the exact
+    same (action, element) combination has been repeated — not on
+    legitimate repetition like sequential scrolls that load new content.
     """
 
-    def __init__(self, window_size: int = 5, similarity_threshold: float = 0.9):
-        self.window_size = window_size
-        self.similarity_threshold = similarity_threshold
-        self._history: list[str] = []
+    def __init__(self, repeat_threshold: int = 3, scroll_threshold: int = 6):
+        # Fire if same (action, element) pair seen this many times
+        self.repeat_threshold = repeat_threshold
+        # Fire if this many consecutive scrolls with no other action type
+        self.scroll_threshold = scroll_threshold
+        self._pairs: list[tuple[str, Optional[int]]] = []
+        self._failed_actions: list[str] = []  # human-readable history for reflection
 
-    def record(self, url: str, num_elements: int, action_type: str) -> None:
-        """Record a state snapshot."""
-        fingerprint = f"{url}|{num_elements}|{action_type}"
-        self._history.append(fingerprint)
-        if len(self._history) > self.window_size * 2:
-            self._history = self._history[-self.window_size * 2:]
+    def record(self, action_type: str, element_id: Optional[int], url: str) -> None:
+        """Record an action taken."""
+        self._pairs.append((action_type, element_id))
+        label = f"{action_type}(el={element_id})" if element_id else action_type
+        self._failed_actions.append(f"{label} @ {url}")
+        if len(self._pairs) > 30:
+            self._pairs = self._pairs[-30:]
+            self._failed_actions = self._failed_actions[-30:]
 
     def is_stuck(self) -> bool:
-        """Check if recent states are repetitive."""
-        if len(self._history) < self.window_size:
+        """True if the agent is demonstrably looping."""
+        if len(self._pairs) < self.repeat_threshold:
             return False
 
-        recent = self._history[-self.window_size:]
-        unique = set(recent)
+        # Rule 1: same (action, element) repeated N times in last window
+        recent = self._pairs[-self.repeat_threshold * 2:]
+        from collections import Counter
+        counts = Counter(recent)
+        if counts.most_common(1)[0][1] >= self.repeat_threshold:
+            return True
 
-        # If most recent actions produced the same fingerprint, we're stuck
-        return len(unique) <= 2
+
+        # Rule 2: too many consecutive scrolls with no page change
+        if len(self._pairs) >= self.scroll_threshold:
+            last_n = self._pairs[-self.scroll_threshold:]
+            if all(a == "scroll" for a, _ in last_n):
+                return True
+
+        return False
+
+    def get_failed_actions(self) -> list[str]:
+        """Return human-readable list of recent actions for reflection."""
+        return self._failed_actions[-10:]
 
     def reset(self) -> None:
-        self._history.clear()
+        self._pairs.clear()
+        self._failed_actions.clear()

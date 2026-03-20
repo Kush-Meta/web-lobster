@@ -1,0 +1,152 @@
+"""Episodic Task Memory — the agent learns from every run.
+
+Web Lobster is the first open-source web agent with persistent episodic memory.
+After each task, the agent saves what worked (and what didn't) to disk. Before
+planning a new task, it retrieves the most similar past experiences and uses
+them as in-context examples — dramatically improving planning quality over time.
+
+Storage: ~/.web_lobster/memories/tasks.jsonl (one JSON record per line)
+Retrieval: Jaccard similarity on word tokens, top-k results above threshold
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from web_lobster.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+MEMORY_DIR = Path.home() / ".web_lobster" / "memories"
+MEMORY_FILE = MEMORY_DIR / "tasks.jsonl"
+
+
+@dataclass
+class TaskRecord:
+    """A single completed task stored in episodic memory."""
+    task: str
+    success: bool
+    final_url: str
+    steps_taken: int
+    elapsed_seconds: float
+    timestamp: float
+    # The plan that was executed (list of sub-goal strings)
+    sub_goals: list[str] = field(default_factory=list)
+    # Sub-goals that actually completed successfully
+    completed_goals: list[str] = field(default_factory=list)
+    # Sub-goals that had to be replanned
+    replanned_goals: list[str] = field(default_factory=list)
+    # The extracted answer (if any)
+    answer: Optional[str] = None
+    # Key learnings extracted by the model after the run
+    learnings: Optional[str] = None
+
+
+class TaskMemory:
+    """Persistent episodic memory for the agent.
+
+    Stores task records to disk and retrieves semantically similar past tasks
+    to inform planning. Uses fast token-level Jaccard similarity — no extra
+    API calls needed for retrieval.
+    """
+
+    def __init__(self, memory_file: Path = MEMORY_FILE):
+        self.memory_file = memory_file
+        self._records: list[TaskRecord] = []
+        self._loaded = False
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        if not self.memory_file.exists():
+            return
+        try:
+            with open(self.memory_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        data = json.loads(line)
+                        self._records.append(TaskRecord(**data))
+            logger.info("memory_loaded", records=len(self._records))
+        except Exception as e:
+            logger.warning("memory_load_error", error=str(e))
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Split text into lowercase word tokens for similarity comparison."""
+        return set(re.findall(r'\b[a-z0-9]+\b', text.lower()))
+
+    @staticmethod
+    def _jaccard(a: set[str], b: set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        return len(a & b) / len(a | b)
+
+    def find_similar(
+        self,
+        task: str,
+        top_k: int = 3,
+        min_similarity: float = 0.15,
+    ) -> list[tuple[float, TaskRecord]]:
+        """Return the top-k most similar past tasks above the similarity threshold."""
+        self._ensure_loaded()
+        if not self._records:
+            return []
+
+        task_tokens = self._tokenize(task)
+        scored = [
+            (self._jaccard(task_tokens, self._tokenize(r.task)), r)
+            for r in self._records
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [(s, r) for s, r in scored if s >= min_similarity][:top_k]
+
+    def format_for_prompt(self, task: str, top_k: int = 3) -> Optional[str]:
+        """Format similar past tasks as a prompt block for the planner.
+
+        Returns None if no relevant memories exist.
+        """
+        similar = self.find_similar(task, top_k=top_k)
+        if not similar:
+            return None
+
+        lines = ["RELEVANT PAST EXPERIENCE (use as guidance, adapt as needed):"]
+        for i, (score, rec) in enumerate(similar, 1):
+            status = "✓ succeeded" if rec.success else "✗ failed"
+            lines.append(f"\n[Memory {i}] (similarity: {score:.0%}) {status}")
+            lines.append(f"Task: {rec.task}")
+            if rec.sub_goals:
+                completed_set = set(rec.completed_goals)
+                lines.append("Plan that was used:")
+                for sg in rec.sub_goals:
+                    tick = "  ✓" if sg in completed_set else "  ✗"
+                    lines.append(f"{tick} {sg}")
+            if rec.learnings:
+                lines.append(f"Key learnings: {rec.learnings}")
+            if rec.answer:
+                lines.append(f"Answer found: {rec.answer}")
+
+        return "\n".join(lines)
+
+    def save(self, record: TaskRecord) -> None:
+        """Persist a task record to disk."""
+        self._ensure_loaded()
+        self._records.append(record)
+
+        self.memory_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(self.memory_file, "a") as f:
+                f.write(json.dumps(asdict(record)) + "\n")
+            logger.info("memory_saved", task=record.task[:60], success=record.success)
+        except Exception as e:
+            logger.warning("memory_save_error", error=str(e))
+
+    def __len__(self) -> int:
+        self._ensure_loaded()
+        return len(self._records)

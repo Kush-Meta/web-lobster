@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from typing import Optional
+
 from web_lobster.core.schemas import SubGoal, TaskPlan
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
@@ -58,12 +60,16 @@ class Planner:
         self.backend = backend
         self.temperature = temperature
 
-    async def plan(self, task: str) -> TaskPlan:
+    async def plan(self, task: str, memory_context: Optional[str] = None) -> TaskPlan:
         """Decompose a task into sub-goals."""
         logger.info("planning", task=task)
 
+        prompt = f"USER TASK: {task}"
+        if memory_context:
+            prompt = f"{memory_context}\n\n{prompt}"
+
         response = await self.backend.generate(
-            prompt=f"USER TASK: {task}",
+            prompt=prompt,
             system=PLANNER_SYSTEM,
             temperature=self.temperature,
             max_tokens=4096,
@@ -112,6 +118,35 @@ Create a revised plan to complete the remaining work from the current state."""
         )
 
         return self._parse_subgoals(response)
+
+    async def extract_learnings(
+        self,
+        task: str,
+        completed_goals: list[SubGoal],
+        failed_goals: list[SubGoal],
+        answer: Optional[str],
+    ) -> str:
+        """After a task run, extract key learnings for future use."""
+        goal_summary = ""
+        if completed_goals:
+            goal_summary += "Completed: " + "; ".join(g.goal for g in completed_goals)
+        if failed_goals:
+            goal_summary += "\nFailed: " + "; ".join(g.goal for g in failed_goals)
+
+        prompt = f"""Task: {task}
+{goal_summary}
+{"Answer found: " + answer if answer else "No answer extracted."}
+
+In 1-2 sentences, what is the most useful thing to know for attempting this type of task again?
+Focus on: what navigation steps worked, what failed, any tricky elements."""
+
+        response = await self.backend.generate(
+            prompt=prompt,
+            system="Extract concise, actionable learnings from a completed web task. Be specific.",
+            temperature=0.1,
+            max_tokens=150,
+        )
+        return response.strip()
 
     def _parse_subgoals(self, response: str) -> list[SubGoal]:
         """Parse the model's JSON response into SubGoal objects."""

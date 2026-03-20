@@ -1,7 +1,8 @@
 """Executor model — decides the next single browser action.
 
-Called every step of the agent loop. Optimized for speed.
-Uses grammar constraints (via llama.cpp) when available to guarantee valid output.
+Called every step of the agent loop. Uses visual grounding when available:
+the annotated screenshot shows numbered badges on every interactive element,
+letting Claude correlate visual position with element IDs for much higher accuracy.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from web_lobster.core.schemas import Action, Observation, SubGoal
+from web_lobster.core.schemas import Action, ActionType, Observation, SubGoal
 from web_lobster.models.base import ModelBackend
 from web_lobster.models.llamacpp_backend import LlamaCppBackend
 from web_lobster.models.anthropic_backend import AnthropicBackend
@@ -17,21 +18,27 @@ from web_lobster.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-EXECUTOR_SYSTEM = """You are a browser automation executor. You see the current page state
-and must choose exactly ONE action to progress toward the goal.
+EXECUTOR_SYSTEM = """You are a browser automation executor with vision capabilities.
+
+VISUAL GROUNDING: The screenshot you receive shows the live browser page with
+NUMBERED ORANGE BADGES overlaid on every interactive element. Each badge shows
+the element's ID. Use these visual markers to identify which element to target —
+cross-reference the badge number with the INTERACTIVE ELEMENTS list.
+
+Example: Badge "10" next to a search box → use element_id 10 to type in it.
+         Badge "5" on a blue "Search" button → use element_id 5 to click it.
 
 Rules:
 - Pick the single most useful next action
-- Prefer clicking labeled buttons/links over typing URLs
-- If a form field needs text, use "type" with the element_id
-- Use "scroll" if the target element might be below the fold
-- Use "wait" if the page is loading (e.g. after navigation)
-- Never repeat the same failed action — try an alternative element or approach
+- Prefer the visually-obvious interactive element for the task
+- If a form field needs text, use "type" with that element's badge number
+- Use "scroll" if the target element's badge is not visible in the screenshot
+- Use "wait" if the page is still loading
+- Never repeat the same (action + element_id) pair that already failed — try another element
 - CRITICAL: Call "done" ONLY after you have personally taken at least one meaningful
-  action (click, type, navigate, etc.) toward this sub-goal in this attempt, AND the
-  success criteria is now clearly met. The ONE exception: if the page already satisfies
-  the success criteria exactly as-is when you first see it (e.g. you are already on the
-  correct page), you may call "done" immediately.
+  action (click, type, navigate, etc.) toward this sub-goal in this attempt AND the
+  success criteria is now clearly met. Exception: call "done" immediately if the page
+  already satisfies the success criteria without any action needed.
 
 Available actions:
   {"action": "click", "element_id": N}
@@ -45,6 +52,13 @@ Available actions:
   {"action": "done", "reason": "brief description of what was accomplished"}
 
 Respond with ONLY a single JSON action object. No explanation."""
+
+REFLECT_SYSTEM = """You are a browser automation debugger. The agent is stuck — it has
+repeated the same actions without making progress. Diagnose the root cause and
+prescribe a concrete alternative approach.
+
+Be specific: name the exact element ID or URL that should be tried instead.
+Output 2-3 sentences maximum."""
 
 
 class Executor:
@@ -66,6 +80,7 @@ class Executor:
         sub_goal: SubGoal,
         action_history_text: str = "",
         actions_taken_this_subgoal: int = 0,
+        reflection: Optional[str] = None,
     ) -> Action:
         """Given the current page state and goal, pick the next action."""
 
@@ -77,44 +92,57 @@ class Executor:
             else ""
         )
 
+        reflection_block = (
+            f"\nREFLECTION FROM PREVIOUS ATTEMPT:\n{reflection}\n"
+            if reflection
+            else ""
+        )
+
         prompt = f"""CURRENT SUB-GOAL: {sub_goal.goal}
 SUCCESS CRITERIA: {sub_goal.success_criteria}
-ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}
+ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}{reflection_block}
 
 PAGE STATE:
 - URL: {observation.url}
 - Title: {observation.title}
 
-INTERACTIVE ELEMENTS:
-{observation.elements_summary(max_elements=40)}
+INTERACTIVE ELEMENTS (match badge numbers in image):
+{observation.elements_summary(max_elements=50)}
 
 ACTION HISTORY (recent):
 {action_history_text}
 
 Choose your next action:"""
 
-        # AnthropicBackend: use tool_use for guaranteed-valid Action (zero parse failures)
+        # Prefer annotated screenshot (has element badge overlays) over raw
+        images = None
+        if observation.annotated_screenshot_base64:
+            images = [observation.annotated_screenshot_base64]
+        elif observation.screenshot_base64:
+            images = [observation.screenshot_base64]
+
         if isinstance(self.backend, AnthropicBackend):
             action = await self.backend.decide_action(
                 prompt=prompt,
                 system=EXECUTOR_SYSTEM,
+                images=images,
                 temperature=self.temperature,
                 max_tokens=256,
             )
         else:
-            # Use GBNF grammar constraint if backend supports it
             grammar = None
             if self.use_grammar and isinstance(self.backend, LlamaCppBackend):
                 grammar = LlamaCppBackend.get_action_grammar()
-
             response = await self.backend.generate(
                 prompt=prompt,
                 system=EXECUTOR_SYSTEM,
+                images=images,
                 temperature=self.temperature,
                 max_tokens=256,
                 grammar=grammar,
             )
             action = self._parse_action(response)
+
         logger.info(
             "executor_action",
             action=action.action.value,
@@ -123,28 +151,68 @@ Choose your next action:"""
         )
         return action
 
-    def _parse_action(self, response: str) -> Action:
-        """Parse the model's response into an Action."""
-        text = response.strip()
+    async def reflect(
+        self,
+        observation: Observation,
+        sub_goal: SubGoal,
+        failed_actions: list[str],
+    ) -> str:
+        """Diagnose why the agent is stuck and suggest a different approach."""
+        prompt = f"""SUB-GOAL: {sub_goal.goal}
+SUCCESS CRITERIA: {sub_goal.success_criteria}
 
-        # Strip markdown if present
+CURRENT URL: {observation.url}
+PAGE TITLE: {observation.title}
+
+FAILED ATTEMPTS (in order):
+{chr(10).join(f"- {a}" for a in failed_actions[-8:])}
+
+AVAILABLE ELEMENTS:
+{observation.elements_summary(max_elements=20)}
+
+Why is the agent stuck? What specific alternative action should it try?"""
+
+        images = None
+        if observation.annotated_screenshot_base64:
+            images = [observation.annotated_screenshot_base64]
+
+        if isinstance(self.backend, AnthropicBackend):
+            reflection = await self.backend.generate(
+                prompt=prompt,
+                system=REFLECT_SYSTEM,
+                images=images,
+                temperature=0.3,
+                max_tokens=150,
+            )
+        else:
+            reflection = await self.backend.generate(
+                prompt=prompt,
+                system=REFLECT_SYSTEM,
+                temperature=0.3,
+                max_tokens=150,
+            )
+
+        logger.info("reflection", text=reflection[:100])
+        return reflection.strip()
+
+    def _parse_action(self, response: str) -> Action:
+        """Parse the model's response into an Action (fallback for non-Anthropic backends)."""
+        text = response.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
 
-        # Find JSON object
         start = text.find("{")
         end = text.rfind("}") + 1
         if start == -1 or end == 0:
             logger.warning("executor_parse_fallback", response=text[:100])
-            # Fallback: if we can't parse, wait and let the loop retry
-            return Action(action="wait", seconds=2, reason="Failed to parse action")
+            return Action(action=ActionType.WAIT, seconds=2, reason="Failed to parse action")
 
         try:
             raw = json.loads(text[start:end])
             return Action(**raw)
         except (json.JSONDecodeError, Exception) as e:
             logger.warning("executor_parse_error", error=str(e), response=text[:100])
-            return Action(action="wait", seconds=2, reason=f"Parse error: {e}")
+            return Action(action=ActionType.WAIT, seconds=2, reason=f"Parse error: {e}")
