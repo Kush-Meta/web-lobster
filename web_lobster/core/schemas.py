@@ -29,6 +29,7 @@ class ActionType(str, Enum):
     HOVER = "hover"
     GO_BACK = "go_back"
     SCREENSHOT = "screenshot"
+    MCP_TOOL = "mcp_tool"
 
 
 class ScrollDirection(str, Enum):
@@ -45,6 +46,8 @@ class Action(BaseModel):
     url: Optional[str] = None
     reason: Optional[str] = None
     seconds: Optional[float] = None
+    mcp_tool_name: Optional[str] = None
+    mcp_tool_args: Optional[dict] = None
 
     @field_validator("element_id", mode="before")
     @classmethod
@@ -198,13 +201,19 @@ class AgentState(BaseModel):
         lines = []
         for act in self.recent_actions(n):
             parts = [act.action.value]
-            if act.element_id is not None:
-                parts.append(f"element [{act.element_id}]")
-            if act.text:
-                parts.append(f'"{act.text}"')
-            if act.url:
-                parts.append(act.url)
-            if act.reason:
-                parts.append(f"({act.reason})")
+            if act.action == ActionType.MCP_TOOL:
+                if act.mcp_tool_name:
+                    parts.append(act.mcp_tool_name)
+                if act.reason:
+                    parts.append(f"→ {act.reason}")
+            else:
+                if act.element_id is not None:
+                    parts.append(f"element [{act.element_id}]")
+                if act.text:
+                    parts.append(f'"{act.text}"')
+                if act.url:
+                    parts.append(act.url)
+                if act.reason:
+                    parts.append(f"({act.reason})")
             lines.append("- " + " ".join(parts))
         return "\n".join(lines) if lines else "(no actions yet)"

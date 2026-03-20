@@ -59,3 +59,9 @@ agent:
   validation_confidence_threshold: 0.7
   action_retry_limit: 2
   screenshot_mode: "hybrid"
+
+# MCP servers — uncomment to enable local tool servers
+# mcp_servers:
+#   - name: filesystem
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/kush/Desktop"]

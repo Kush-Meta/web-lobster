@@ -9,6 +9,7 @@ Implements the hybrid perception approach:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Optional
 
@@ -112,38 +113,73 @@ class Observer:
         logger.debug("observing", url=self.page.url)
 
         # 1. Inject element tagging and extract metadata
-        elements_raw = await self.page.evaluate(EXTRACT_ELEMENTS_JS)
-        elements = [
-            PageElement(
-                id=el["id"],
-                role=el["role"],
-                label=el["label"],
-                value=el.get("value"),
-                tag=el.get("tag"),
-                href=el.get("href"),
-                is_visible=el.get("is_visible", True),
-                is_enabled=el.get("is_enabled", True),
-                bbox=BoundingBox(**el["bbox"]) if el.get("bbox") else None,
-            )
-            for el in elements_raw
-        ]
+        # Wrap in retry logic: if the page is mid-navigation the execution context
+        # gets destroyed; wait briefly and try once more before giving up.
+        elements: list[PageElement] = []
+        screenshot_b64: Optional[str] = None
+        annotated_b64: Optional[str] = None
+        page_title = ""
 
-        # 2. Take screenshot
-        screenshot_b64 = None
-        annotated_b64 = None
-        if include_screenshot:
-            screenshot_bytes = await self.page.screenshot(
-                type="jpeg",
-                quality=self.config.screenshot_quality,
-            )
-            screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+        for attempt in range(2):
+            try:
+                elements_raw = await self.page.evaluate(EXTRACT_ELEMENTS_JS)
+                elements = [
+                    PageElement(
+                        id=el["id"],
+                        role=el["role"],
+                        label=el["label"],
+                        value=el.get("value"),
+                        tag=el.get("tag"),
+                        href=el.get("href"),
+                        is_visible=el.get("is_visible", True),
+                        is_enabled=el.get("is_enabled", True),
+                        bbox=BoundingBox(**el["bbox"]) if el.get("bbox") else None,
+                    )
+                    for el in elements_raw
+                ]
 
-            # 3. Annotate screenshot with element labels
-            annotated_bytes = self.annotator.annotate(
-                screenshot_bytes,
-                [el for el in elements if el.is_visible and el.bbox],
-            )
-            annotated_b64 = base64.b64encode(annotated_bytes).decode("utf-8")
+                # 2. Take screenshot
+                if include_screenshot:
+                    screenshot_bytes = await self.page.screenshot(
+                        type="jpeg",
+                        quality=self.config.screenshot_quality,
+                    )
+                    screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+                    # 3. Annotate screenshot with element labels
+                    annotated_bytes = self.annotator.annotate(
+                        screenshot_bytes,
+                        [el for el in elements if el.is_visible and el.bbox],
+                    )
+                    annotated_b64 = base64.b64encode(annotated_bytes).decode("utf-8")
+
+                page_title = await self.page.title()
+                # Success — break out of retry loop
+                break
+
+            except Exception as exc:
+                exc_str = str(exc)
+                if "Execution context was destroyed" in exc_str or "navigation" in exc_str.lower():
+                    if attempt == 0:
+                        logger.warning(
+                            "observe_context_destroyed_retrying",
+                            error=exc_str[:120],
+                        )
+                        await asyncio.sleep(1.0)
+                        continue
+                    else:
+                        # Second failure — return empty observation so the loop continues
+                        logger.warning(
+                            "observe_context_destroyed_giving_up",
+                            error=exc_str[:120],
+                        )
+                        return Observation(
+                            url=self.page.url,
+                            title="",
+                            elements=[],
+                        )
+                else:
+                    raise
 
         # 4. Get simplified accessibility tree
         try:
@@ -161,7 +197,7 @@ class Observer:
 
         observation = Observation(
             url=self.page.url,
-            title=await self.page.title(),
+            title=page_title,
             elements=elements,
             screenshot_base64=screenshot_b64,
             annotated_screenshot_base64=annotated_b64,

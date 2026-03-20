@@ -39,6 +39,7 @@ from web_lobster.models.llamacpp_backend import LlamaCppBackend
 from web_lobster.models.anthropic_backend import AnthropicBackend
 from web_lobster.browser.controller import BrowserController
 from web_lobster.actions.safety import SafetyGate
+from web_lobster.tools.mcp_manager import MCPManager
 from web_lobster.memory.task_memory import TaskMemory, TaskRecord
 from web_lobster.utils.logging import get_logger, TaskDisplay
 from web_lobster.utils.retry import StuckDetector, retry_async
@@ -74,6 +75,9 @@ class Orchestrator:
         self.browser = BrowserController(config.browser)
         self.safety = SafetyGate(config.safety)
         self.stuck_detector = StuckDetector()
+
+        # MCP server manager
+        self.mcp = MCPManager(config.mcp_servers)
 
         # Agent state
         self.state = AgentState(max_steps=config.agent.max_steps)
@@ -180,6 +184,11 @@ class Orchestrator:
             # 1. Launch browser
             await self.browser.start(start_url)
 
+            # 1b. Connect to MCP servers (if any configured)
+            await self.mcp.start()
+            if self.mcp.has_tools:
+                logger.info("mcp_ready", tool_count=len(self.mcp.tools))
+
             # 2. Plan the task (informed by episodic memory)
             plan = await retry_async(
                 self.planner.plan, task,
@@ -275,6 +284,7 @@ class Orchestrator:
         finally:
             if not self.ui:
                 self.display.stop()
+            await self.mcp.stop()
             await self.browser.close()
 
     async def _execute_subgoal(self, sub_goal) -> bool:
@@ -314,7 +324,26 @@ class Orchestrator:
                     action_history_text=self.state.action_history_summary(),
                     actions_taken_this_subgoal=action_count_this_attempt - 1,
                     reflection=combined_reflection,
+                    mcp_tools=self.mcp.tools if self.mcp.has_tools else None,
                 )
+
+                # --- MCP TOOL CALL ---
+                if action.action == ActionType.MCP_TOOL:
+                    tool_name = action.mcp_tool_name or ""
+                    tool_args = action.mcp_tool_args or {}
+                    logger.info("mcp_tool_call", tool=tool_name, args=str(tool_args)[:80])
+                    result = await self.mcp.call_tool(tool_name, tool_args)
+                    await self._ui_emit("on_action", action, self.state.step_count)
+                    # Record in action history so the executor can see the result
+                    self.state.action_history.append(
+                        Action(
+                            action=ActionType.MCP_TOOL,
+                            mcp_tool_name=tool_name,
+                            mcp_tool_args=tool_args,
+                            reason=result[:500],
+                        )
+                    )
+                    continue
 
                 # --- TERMINAL: done ---
                 if action.action == ActionType.DONE:

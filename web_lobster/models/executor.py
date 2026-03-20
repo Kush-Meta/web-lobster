@@ -81,8 +81,22 @@ class Executor:
         action_history_text: str = "",
         actions_taken_this_subgoal: int = 0,
         reflection: Optional[str] = None,
+        mcp_tools: Optional[list[dict]] = None,
     ) -> Action:
         """Given the current page state and goal, pick the next action."""
+
+        # Build effective system prompt, appending MCP tool info when available
+        system = EXECUTOR_SYSTEM
+        if mcp_tools:
+            tool_lines = "\n".join(
+                f"  - {t['name']}: {t.get('description', '')}" for t in mcp_tools
+            )
+            system = (
+                system
+                + f"\n\nMCP TOOLS AVAILABLE (use mcp_tool action to call these):\n"
+                + tool_lines
+                + '\nUse: {"action": "mcp_tool", "mcp_tool_name": "tool_name", "mcp_tool_args": {...}}'
+            )
 
         done_warning = (
             "\nWARNING: You have taken 0 actions toward this sub-goal. "
@@ -124,10 +138,11 @@ Choose your next action:"""
         if isinstance(self.backend, AnthropicBackend):
             action = await self.backend.decide_action(
                 prompt=prompt,
-                system=EXECUTOR_SYSTEM,
+                system=system,
                 images=images,
                 temperature=self.temperature,
                 max_tokens=256,
+                extra_tools=mcp_tools,
             )
         else:
             grammar = None
@@ -135,7 +150,7 @@ Choose your next action:"""
                 grammar = LlamaCppBackend.get_action_grammar()
             response = await self.backend.generate(
                 prompt=prompt,
-                system=EXECUTOR_SYSTEM,
+                system=system,
                 images=images,
                 temperature=self.temperature,
                 max_tokens=256,

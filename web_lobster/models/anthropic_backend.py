@@ -219,6 +219,7 @@ class AnthropicBackend(ModelBackend):
         images: Optional[list[str]] = None,
         temperature: float = 0.0,
         max_tokens: int = 256,
+        extra_tools: Optional[list[dict]] = None,
     ) -> Action:
         """Executor-specific: uses tool_use to return a guaranteed-valid Action.
 
@@ -242,12 +243,24 @@ class AnthropicBackend(ModelBackend):
         else:
             content = prompt
 
+        # When extra_tools (MCP tools) are provided, we allow Claude to choose
+        # any tool — either decide_action or one of the MCP tools.
+        # Without extra_tools, force Claude to always call decide_action.
+        tools = [DECIDE_ACTION_TOOL]
+        if extra_tools:
+            tools = tools + list(extra_tools)
+
+        if extra_tools:
+            tool_choice: dict = {"type": "auto"}
+        else:
+            tool_choice = {"type": "tool", "name": "decide_action"}
+
         kwargs: dict = {
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "tools": [DECIDE_ACTION_TOOL],
-            "tool_choice": {"type": "tool", "name": "decide_action"},
+            "tools": tools,
+            "tool_choice": tool_choice,
             "messages": [{"role": "user", "content": content}],
         }
         if system:
@@ -257,7 +270,7 @@ class AnthropicBackend(ModelBackend):
 
         response = await self._call_with_retry(**kwargs)
 
-        # Find the tool_use block — guaranteed present due to forced tool_choice
+        # Find the tool_use block
         tool_block = next(
             (b for b in response.content if b.type == "tool_use"),
             None,
@@ -265,6 +278,20 @@ class AnthropicBackend(ModelBackend):
         if tool_block is None:
             logger.error("anthropic_no_tool_block", content=str(response.content))
             return Action(action=ActionType.WAIT, seconds=2, reason="No tool_use block")
+
+        # If Claude called an MCP tool (not decide_action), return an MCP_TOOL action
+        if tool_block.name != "decide_action":
+            logger.debug(
+                "anthropic_mcp_tool_call",
+                tool=tool_block.name,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
+            return Action(
+                action=ActionType.MCP_TOOL,
+                mcp_tool_name=tool_block.name,
+                mcp_tool_args=tool_block.input,
+            )
 
         raw = tool_block.input  # already a dict, not a string
 

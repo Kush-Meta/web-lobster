@@ -13,6 +13,14 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class MCPServerConfig(BaseModel):
+    """Configuration for a single MCP (Model Context Protocol) server."""
+    name: str
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+
+
 class ModelConfig(BaseModel):
     """Configuration for a single model role."""
     backend: str = "ollama"          # "ollama", "llamacpp", or "anthropic"
@@ -80,6 +88,7 @@ class WebLobsterConfig(BaseModel):
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> WebLobsterConfig:
