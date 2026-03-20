@@ -5,6 +5,7 @@ Loads settings from YAML files with sensible defaults.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -91,4 +92,20 @@ class WebLobsterConfig(BaseModel):
 
     @classmethod
     def default(cls) -> WebLobsterConfig:
+        """Return sensible defaults.
+
+        If ANTHROPIC_API_KEY is set in the environment, use Claude Haiku for
+        all roles so the agent works out of the box without a local GPU.
+        Otherwise fall back to the Ollama stack.
+        """
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            haiku = ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001")
+            return cls(
+                planner=ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001",
+                                    temperature=0.2, max_tokens=4096),
+                executor=ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001",
+                                     temperature=0.0, max_tokens=256),
+                validator=ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001",
+                                      temperature=0.1, max_tokens=512),
+            )
         return cls()
