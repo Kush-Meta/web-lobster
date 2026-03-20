@@ -140,11 +140,13 @@ class Orchestrator:
             logger.info("plan_ready", sub_goals=len(plan.sub_goals))
             await self._ui_emit("on_plan_ready", plan)
 
-            # 3. Execute each sub-goal
-            for sub_goal in plan.sub_goals:
-                if self.state.is_over_budget:
-                    logger.warning("step_budget_exhausted", steps=self.state.step_count)
-                    break
+            # 3. Execute sub-goals via while loop so replanning works correctly.
+            # A for loop holds a reference to the original list and misses new goals
+            # appended by _replan. plan.current_goal always finds the first pending goal.
+            while not self.state.is_over_budget:
+                sub_goal = plan.current_goal
+                if sub_goal is None:
+                    break  # all goals completed or the only remaining ones are failed
 
                 sub_goal.status = SubGoalStatus.ACTIVE
                 logger.info("subgoal_start", id=sub_goal.id, goal=sub_goal.goal)
@@ -157,20 +159,32 @@ class Orchestrator:
                     logger.success("subgoal_complete", id=sub_goal.id)
                     await self._ui_emit("on_subgoal_complete", sub_goal)
                 else:
-                    # Try re-planning
                     if self.state.replan_count < self.state.max_replans:
                         logger.warning("subgoal_failed_replanning", id=sub_goal.id)
+                        # Mark as skipped so current_goal doesn't return it again
+                        sub_goal.status = SubGoalStatus.SKIPPED
                         replanned = await self._replan(sub_goal)
                         if not replanned:
                             sub_goal.status = SubGoalStatus.FAILED
                             logger.error("replan_failed", id=sub_goal.id)
                             break
+                        # New goals were appended — while loop picks them up automatically
                     else:
                         sub_goal.status = SubGoalStatus.FAILED
                         logger.error("subgoal_failed", id=sub_goal.id)
                         break
 
-            # 4. Determine final result
+            if self.state.is_over_budget:
+                logger.warning("step_budget_exhausted", steps=self.state.step_count)
+
+            # 4. Extract the answer from the final page state.
+            # Run even on partial success — if the agent navigated to the right page,
+            # the answer is there regardless of whether every sub-goal was ticked off.
+            answer = None
+            if self.state.current_observation:
+                answer = await self._extract_answer(task, self.state.current_observation)
+
+            # 5. Determine final result
             elapsed = time.time() - start_time
             result = AgentResult(
                 success=plan.is_complete,
@@ -179,6 +193,7 @@ class Orchestrator:
                 steps_taken=self.state.step_count,
                 elapsed_seconds=elapsed,
                 final_url=self.browser.current_url,
+                answer=answer,
             )
 
             if result.success:
@@ -237,6 +252,7 @@ class Orchestrator:
                     observation=observation,
                     sub_goal=sub_goal,
                     action_history_text=self.state.action_history_summary(),
+                    actions_taken_this_subgoal=action_count_this_attempt - 1,
                 )
 
                 # --- CHECK for terminal action ---
@@ -311,6 +327,41 @@ class Orchestrator:
 
         return False
 
+    async def _extract_answer(self, task: str, observation) -> Optional[str]:
+        """After task completion, ask the model to extract a direct answer from the page."""
+        page_content = ""
+        if observation.page_text:
+            page_content = observation.page_text[:3000]
+        elif observation.accessibility_tree:
+            page_content = observation.accessibility_tree[:3000]
+
+        prompt = f"""The user asked: "{task}"
+
+The agent has finished. Here is the final page content:
+
+URL: {observation.url}
+Title: {observation.title}
+
+PAGE TEXT:
+{page_content}
+
+Based on what is on this page, provide a direct, concise answer to the user's question.
+If the page contains a specific fact, date, name, or value they asked for, state it clearly.
+If the task was an action (e.g. "search for X") rather than a question, summarise what was accomplished and what the page shows."""
+
+        try:
+            answer = await self.planner_backend.generate(
+                prompt=prompt,
+                system="You extract direct answers from web page content. Be concise and factual.",
+                temperature=0.1,
+                max_tokens=512,
+            )
+            logger.info("answer_extracted", length=len(answer))
+            return answer.strip()
+        except Exception as e:
+            logger.warning("answer_extraction_failed", error=str(e))
+            return None
+
     async def _replan(self, failed_goal) -> bool:
         """Request a revised plan from the planner after a failure."""
         self.state.replan_count += 1
@@ -332,14 +383,10 @@ class Orchestrator:
             if not new_goals:
                 return False
 
-            # Replace remaining goals in the plan
-            # Keep completed goals, replace everything from the failed one onward
-            new_plan_goals = [
-                sg for sg in self.state.plan.sub_goals
-                if sg.status == SubGoalStatus.COMPLETED
-            ] + new_goals
-
-            self.state.plan.sub_goals = new_plan_goals
+            # Append new goals to the END of the existing list (do not replace it).
+            # The while loop in run() uses plan.current_goal which finds the first
+            # PENDING goal — appended goals will be picked up automatically.
+            self.state.plan.sub_goals.extend(new_goals)
             logger.info("replan_success", new_goals=len(new_goals))
             return True
 
@@ -372,6 +419,7 @@ class AgentResult:
         elapsed_seconds: float = 0.0,
         final_url: str = "",
         error: Optional[str] = None,
+        answer: Optional[str] = None,
     ):
         self.success = success
         self.task = task
@@ -380,6 +428,7 @@ class AgentResult:
         self.elapsed_seconds = elapsed_seconds
         self.final_url = final_url
         self.error = error
+        self.answer = answer
 
     def summary(self) -> str:
         status = "✓ SUCCESS" if self.success else "✗ FAILED"
@@ -398,5 +447,7 @@ class AgentResult:
             for sg in self.plan.sub_goals:
                 icon = {"completed": "✓", "failed": "✗", "pending": "○", "active": "◉", "skipped": "⊘"}
                 lines.append(f"    {icon.get(sg.status.value, '?')} {sg.goal}")
+        if self.answer:
+            lines.append(f"\n  ANSWER:\n  {self.answer}")
         lines.append(f"{'='*50}\n")
         return "\n".join(lines)

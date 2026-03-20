@@ -26,8 +26,12 @@ Rules:
 - If a form field needs text, use "type" with the element_id
 - Use "scroll" if the target element might be below the fold
 - Use "wait" if the page is loading (e.g. after navigation)
-- Use "done" when the sub-goal's success criteria is met
-- Never repeat the same failed action — try an alternative
+- Never repeat the same failed action — try an alternative element or approach
+- CRITICAL: Call "done" ONLY after you have personally taken at least one meaningful
+  action (click, type, navigate, etc.) toward this sub-goal in this attempt, AND the
+  success criteria is now clearly met. The ONE exception: if the page already satisfies
+  the success criteria exactly as-is when you first see it (e.g. you are already on the
+  correct page), you may call "done" immediately.
 
 Available actions:
   {"action": "click", "element_id": N}
@@ -38,7 +42,7 @@ Available actions:
   {"action": "select", "element_id": N, "text": "option text"}
   {"action": "hover", "element_id": N}
   {"action": "go_back"}
-  {"action": "done", "reason": "..."}
+  {"action": "done", "reason": "brief description of what was accomplished"}
 
 Respond with ONLY a single JSON action object. No explanation."""
 
@@ -61,11 +65,21 @@ class Executor:
         observation: Observation,
         sub_goal: SubGoal,
         action_history_text: str = "",
+        actions_taken_this_subgoal: int = 0,
     ) -> Action:
         """Given the current page state and goal, pick the next action."""
 
+        done_warning = (
+            "\nWARNING: You have taken 0 actions toward this sub-goal. "
+            "You MUST perform the required action before calling 'done', "
+            "unless the success criteria is already fully met on this page right now."
+            if actions_taken_this_subgoal == 0
+            else ""
+        )
+
         prompt = f"""CURRENT SUB-GOAL: {sub_goal.goal}
 SUCCESS CRITERIA: {sub_goal.success_criteria}
+ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}
 
 PAGE STATE:
 - URL: {observation.url}

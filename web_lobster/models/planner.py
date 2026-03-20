@@ -25,6 +25,14 @@ agent can execute. Each sub-goal should be:
 3. Ordered — later goals may depend on earlier ones
 4. Specific — avoid vague goals like "find information"
 
+CRITICAL RULES:
+- Sub-goals must be NAVIGATION actions only: go to pages, click links, fill forms, search.
+- Do NOT create sub-goals for "extracting", "reading", "reporting", "finding" or
+  "identifying" specific information. Information extraction is handled automatically
+  after navigation completes — you must NOT include it as a sub-goal.
+- Your final sub-goal should always be to navigate to or reach the page that contains
+  the answer/result — NOT to read from it.
+
 Think step by step about what a human would do to complete this task in a browser.
 
 Respond ONLY with a JSON array of sub-goals. No other text.

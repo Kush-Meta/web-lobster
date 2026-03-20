@@ -140,11 +140,14 @@ class AnthropicBackend(ModelBackend):
         if images:
             content: list = []
             for b64 in images:
+                # Detect actual format from base64 header bytes
+                # JPEG starts with /9j/, PNG starts with iVBORw0KGgo
+                media_type = "image/jpeg" if b64.startswith("/9j/") else "image/png"
                 content.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
+                        "media_type": media_type,
                         "data": b64,
                     },
                 })

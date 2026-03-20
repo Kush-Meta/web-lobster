@@ -21,9 +21,8 @@ executor:
   timeout: 30.0
 
 validator:
-  backend: ollama
-  model: "minicpm-v:8b"
-  base_url: "http://localhost:11434"
+  backend: anthropic
+  model: "claude-haiku-4-5-20251001"
   temperature: 0.1
   max_tokens: 512
   timeout: 60.0
