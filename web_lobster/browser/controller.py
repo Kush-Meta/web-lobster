@@ -56,6 +56,39 @@ _GET_FOCUSED_INPUT_JS = """
 }
 """
 
+# Clears a React-controlled input without breaking its internal state.
+# Setting .value directly doesn't work in React because it intercepts the
+# property descriptor. Using the native HTMLInputElement.prototype setter
+# bypasses React's wrapper, then we dispatch a real 'input' event so React
+# treats it as user input and resets its controlled-value state to "".
+_CLEAR_FOCUSED_INPUT_JS = """
+() => {
+    let el = document.activeElement;
+    if (!el) return false;
+    // Drill into combobox wrapper to find the real text input
+    if (el.tagName.toLowerCase() !== 'input' && el.tagName.toLowerCase() !== 'textarea') {
+        const inner = el.querySelector('input:not([type="hidden"]), textarea');
+        if (inner) { inner.focus(); el = inner; }
+    }
+    const tag = el.tagName.toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea') return false;
+
+    // Use the native setter to bypass React's synthetic value tracking
+    const proto = tag === 'textarea'
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (nativeSetter) {
+        nativeSetter.call(el, '');
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+        el.value = '';
+    }
+    return true;
+}
+"""
+
 
 class BrowserController:
     """Manages a Playwright browser instance and executes actions."""
@@ -200,20 +233,33 @@ class BrowserController:
                 timeout=self.config.default_timeout * 1000
             )
 
-        # Wait briefly for React to process the click and potentially mount the
+        # Wait for React to process the click and potentially mount the
         # inner <input> (common pattern in custom comboboxes like Google Flights)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.4)
 
         # Ensure a real input/textarea has focus; if a combobox wrapper got the
         # click, JS shifts focus to its inner input automatically.
         await self._page.evaluate(_GET_FOCUSED_INPUT_JS)
+        await asyncio.sleep(0.1)
 
-        # Clear any pre-filled content, then type character-by-character so
-        # autocomplete/autocorrect JavaScript listeners fire on every keystroke.
-        await self._page.keyboard.press("Meta+a")
-        await self._page.keyboard.press("Control+a")
-        await self._page.keyboard.press("Backspace")
-        await self._page.keyboard.type(text, delay=60)
+        # Clear pre-filled content via React's native setter (bypasses React's
+        # synthetic event wrapper so it sees the field as empty).
+        cleared = await self._page.evaluate(_CLEAR_FOCUSED_INPUT_JS)
+
+        if not cleared:
+            # Fallback: keyboard select-all + delete for non-React fields
+            await self._page.keyboard.press("Control+a")
+            await asyncio.sleep(0.05)
+            await self._page.keyboard.press("Meta+a")
+            await asyncio.sleep(0.05)
+            await self._page.keyboard.press("Delete")
+            await asyncio.sleep(0.05)
+
+        # Small pause so the page can react to the cleared field before we type
+        await asyncio.sleep(0.15)
+
+        # Type character-by-character so autocomplete listeners fire on each keystroke.
+        await self._page.keyboard.type(text, delay=70)
 
     async def _triple_click(self, element_id: Optional[int]) -> None:
         """Triple-click to select all text in a field — ideal for clearing pre-filled inputs."""

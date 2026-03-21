@@ -8,6 +8,7 @@ retry, or escalate to re-planning.
 from __future__ import annotations
 
 import json
+import os
 from typing import Optional
 
 from web_lobster.core.schemas import Observation, SubGoal, ValidationResult
@@ -15,6 +16,17 @@ from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _make_anthropic_fallback_backend():
+    """Create a Haiku backend for validation fallback when Ollama is unavailable."""
+    try:
+        from web_lobster.models.anthropic_backend import AnthropicBackend
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return AnthropicBackend(model="claude-haiku-4-5-20251001")
+    except Exception:
+        pass
+    return None
 
 VALIDATOR_SYSTEM = """You are a web page validator. You will be shown a screenshot
 of a web page and a success criteria. Your job is to determine whether
@@ -86,23 +98,14 @@ Based on what you see, has the success criteria been met?"""
         # Use structured tool_use when available (e.g. AnthropicBackend) to
         # eliminate JSON parse failures. Fall back to text generation + parsing
         # for Ollama / llama.cpp backends that don't implement this method.
-        if hasattr(self.backend, "decide_validation"):
-            result = await self.backend.decide_validation(
-                prompt=prompt,
-                system=system,
-                images=images,
-                temperature=self.temperature,
-                max_tokens=256,
+        # If the primary backend (e.g. Ollama) is unavailable, fall back to
+        # Anthropic Haiku for validation so the task can continue.
+        result = await self._call_backend(prompt, system, images)
+        if result is None:
+            result = ValidationResult(
+                achieved=False, confidence=0.0,
+                observation="Validator backend unavailable"
             )
-        else:
-            response = await self.backend.generate(
-                prompt=prompt,
-                system=system,
-                images=images,
-                temperature=self.temperature,
-                max_tokens=512,
-            )
-            result = self._parse_result(response)
         logger.info(
             "validation",
             goal=sub_goal.goal[:50],
@@ -110,6 +113,50 @@ Based on what you see, has the success criteria been met?"""
             confidence=result.confidence,
         )
         return result
+
+    async def _call_backend(
+        self,
+        prompt: str,
+        system: str,
+        images: Optional[list[str]],
+    ) -> Optional[ValidationResult]:
+        """Call the primary backend, falling back to Anthropic if it fails."""
+        backends_to_try = [self.backend]
+
+        # Build a fallback Anthropic backend if the primary isn't Anthropic
+        from web_lobster.models.anthropic_backend import AnthropicBackend
+        if not isinstance(self.backend, AnthropicBackend):
+            fallback = _make_anthropic_fallback_backend()
+            if fallback:
+                backends_to_try.append(fallback)
+
+        for backend in backends_to_try:
+            try:
+                if hasattr(backend, "decide_validation"):
+                    return await backend.decide_validation(
+                        prompt=prompt,
+                        system=system,
+                        images=images,
+                        temperature=self.temperature,
+                        max_tokens=256,
+                    )
+                else:
+                    response = await backend.generate(
+                        prompt=prompt,
+                        system=system,
+                        images=images,
+                        temperature=self.temperature,
+                        max_tokens=512,
+                    )
+                    return self._parse_result(response)
+            except Exception as e:
+                logger.warning(
+                    "validator_backend_failed",
+                    backend=type(backend).__name__,
+                    error=str(e)[:120],
+                )
+                continue  # Try next backend (or return None if none left)
+        return None
 
     def _parse_result(self, response: str) -> ValidationResult:
         """Parse the validator's JSON response."""

@@ -1,14 +1,19 @@
-# Web Lobster — Anthropic Claude Configuration
-# Requires: ANTHROPIC_API_KEY environment variable
+# Web Lobster — Mixed Model Configuration (Recommended)
 #
-# Cost profile (approximate per task):
-#   Planner   — Sonnet 4.6  (called ~1-3x per task, deep reasoning)
-#   Executor  — Haiku 4.5   (called every step, ~20-60x per task, tool_use enforces valid JSON)
-#   Validator — minicpm-v:8b via local Ollama (vision locally, saves API cost)
+# Model roles:
+#   Planner   — Claude Sonnet 4.6  (cloud)  called ~1-3x per task; smart decomposition
+#   Executor  — Claude Haiku 4.5   (cloud)  called every step; tool_use enforces valid JSON
+#   Validator — minicpm-v:8b       (local)  open-source vision model; checks goal achievement
+#
+# Requires:
+#   - ANTHROPIC_API_KEY env var (for planner + executor)
+#   - Ollama running locally with minicpm-v:8b pulled:
+#       ollama pull minicpm-v:8b
+#   - If Ollama is unavailable the validator auto-falls back to Haiku.
 
 planner:
   backend: anthropic
-  model: "claude-haiku-4-5-20251001"
+  model: "claude-sonnet-4-6"
   temperature: 0.2
   max_tokens: 4096
   timeout: 120.0
@@ -21,8 +26,9 @@ executor:
   timeout: 30.0
 
 validator:
-  backend: anthropic
-  model: "claude-haiku-4-5-20251001"
+  backend: ollama
+  model: "minicpm-v:8b"
+  base_url: "http://localhost:11434"
   temperature: 0.1
   max_tokens: 512
   timeout: 60.0
@@ -59,6 +65,7 @@ agent:
   validation_confidence_threshold: 0.7
   action_retry_limit: 2
   screenshot_mode: "hybrid"
+  max_seconds: 600
 
 # MCP servers — uncomment to enable local tool servers
 # mcp_servers:

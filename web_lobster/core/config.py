@@ -101,23 +101,27 @@ class WebLobsterConfig(BaseModel):
         return cls(**data)
 
     def upgrade_ollama_to_anthropic(self) -> "WebLobsterConfig":
-        """If all roles are ollama but ANTHROPIC_API_KEY is set, upgrade to Haiku.
+        """Upgrade any Ollama roles to Anthropic when ANTHROPIC_API_KEY is set.
 
-        Safe to call on any config — returns self unchanged when the condition
-        isn't met (key missing, or at least one non-ollama backend already set).
+        - Planner Ollama  → Sonnet 4.6   (best reasoning for task decomposition)
+        - Executor Ollama → Haiku 4.5    (fast per-step tool_use)
+        - Validator Ollama → kept local  (open-source vision; has Anthropic fallback)
+
+        Safe to call on any config — no-op when key is absent or no Ollama roles exist.
         """
         if not os.environ.get("ANTHROPIC_API_KEY"):
             return self
-        roles = [self.planner, self.executor, self.validator]
-        if not all(r.backend == "ollama" for r in roles):
-            return self
-        haiku = "claude-haiku-4-5-20251001"
         data = self.model_dump()
-        data["planner"].update(backend="anthropic", model=haiku)
-        data["executor"].update(backend="anthropic", model=haiku)
-        data["validator"].update(backend="anthropic", model=haiku)
-        # Anthropic is faster than local Ollama; raise the per-subgoal action
-        # cap to give the agent more room on complex UIs like Google Flights.
+        changed = False
+        if data["planner"]["backend"] == "ollama":
+            data["planner"].update(backend="anthropic", model="claude-sonnet-4-6")
+            changed = True
+        if data["executor"]["backend"] == "ollama":
+            data["executor"].update(backend="anthropic", model="claude-haiku-4-5-20251001")
+            changed = True
+        # Validator stays on Ollama (open-source); falls back to Haiku at runtime if unavailable
+        if not changed:
+            return self
         data["safety"]["max_actions_per_subgoal"] = max(
             data["safety"]["max_actions_per_subgoal"], 30
         )
@@ -127,18 +131,20 @@ class WebLobsterConfig(BaseModel):
     def default(cls) -> WebLobsterConfig:
         """Return sensible defaults.
 
-        If ANTHROPIC_API_KEY is set in the environment, use Claude Haiku for
-        all roles so the agent works out of the box without a local GPU.
-        Otherwise fall back to the Ollama stack.
+        When ANTHROPIC_API_KEY is set:
+          - Planner  → Claude Sonnet 4.6 (smarter task decomposition)
+          - Executor → Claude Haiku 4.5  (fast per-step decisions)
+          - Validator→ minicpm-v:8b local (open-source vision; Haiku fallback at runtime)
+
+        Without the key, everything falls back to the Ollama stack.
         """
         if os.environ.get("ANTHROPIC_API_KEY"):
-            haiku = ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001")
             return cls(
-                planner=ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001",
+                planner=ModelConfig(backend="anthropic", model="claude-sonnet-4-6",
                                     temperature=0.2, max_tokens=4096),
                 executor=ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001",
                                      temperature=0.0, max_tokens=256),
-                validator=ModelConfig(backend="anthropic", model="claude-haiku-4-5-20251001",
+                validator=ModelConfig(backend="ollama", model="minicpm-v:8b",
                                       temperature=0.1, max_tokens=512),
             )
         return cls()
