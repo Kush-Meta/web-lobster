@@ -103,6 +103,8 @@ class BrowserController:
             match action.action:
                 case ActionType.CLICK:
                     await self._click(action.element_id)
+                case ActionType.TRIPLE_CLICK:
+                    await self._triple_click(action.element_id)
                 case ActionType.TYPE:
                     await self._type(action.element_id, action.text or "")
                 case ActionType.SCROLL:
@@ -212,6 +214,29 @@ class BrowserController:
         await self._page.keyboard.press("Control+a")
         await self._page.keyboard.press("Backspace")
         await self._page.keyboard.type(text, delay=60)
+
+    async def _triple_click(self, element_id: Optional[int]) -> None:
+        """Triple-click to select all text in a field — ideal for clearing pre-filled inputs."""
+        if element_id is None:
+            raise ValueError("triple_click requires element_id")
+        el = self._find_element(element_id)
+        if el and el.bbox:
+            cx = el.bbox.x + el.bbox.width / 2
+            cy = el.bbox.y + el.bbox.height / 2
+            await self._page.mouse.click(cx, cy, click_count=3)
+        elif el and el.stable_selector:
+            try:
+                await self._page.locator(el.stable_selector).first.click(click_count=3, timeout=5_000)
+                return
+            except Exception:
+                pass
+            await self._page.locator(f'[data-wl-id="{element_id}"]').click(
+                click_count=3, timeout=self.config.default_timeout * 1000
+            )
+        else:
+            await self._page.locator(f'[data-wl-id="{element_id}"]').click(
+                click_count=3, timeout=self.config.default_timeout * 1000
+            )
 
     async def _scroll(self, direction: ScrollDirection) -> None:
         delta = -500 if direction == ScrollDirection.UP else 500

@@ -41,6 +41,7 @@ DECIDE_ACTION_TOOL = {
                 "type": "string",
                 "enum": [
                     "click",
+                    "triple_click",
                     "type",
                     "scroll",
                     "navigate",

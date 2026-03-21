@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class ActionType(str, Enum):
     CLICK = "click"
+    TRIPLE_CLICK = "triple_click"   # select-all in text fields before retyping
     TYPE = "type"
     SCROLL = "scroll"
     NAVIGATE = "navigate"

@@ -42,6 +42,7 @@ Rules:
 
 Available actions:
   {"action": "click", "element_id": N}
+  {"action": "triple_click", "element_id": N}   -- select all text in a field (use before retyping to replace pre-filled content)
   {"action": "type", "element_id": N, "text": "..."}
   {"action": "scroll", "direction": "down"|"up"}
   {"action": "navigate", "url": "https://..."}
