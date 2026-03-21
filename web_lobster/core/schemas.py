@@ -94,6 +94,8 @@ class Observation(BaseModel):
     annotated_screenshot_base64: Optional[str] = None  # with element labels overlaid
     accessibility_tree: Optional[str] = None   # simplified text representation
     page_text: Optional[str] = None            # visible text content (truncated)
+    dom_structured: Optional[str] = None       # rich DOM summary for DOM mode
+    login_detected: bool = False               # page requires authentication
     timestamp: float = Field(default_factory=time.time)
 
     def elements_summary(self, max_elements: int = 40) -> str:

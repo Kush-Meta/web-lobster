@@ -65,6 +65,7 @@ class AgentConfig(BaseModel):
     validation_confidence_threshold: float = 0.7
     action_retry_limit: int = 2
     screenshot_mode: str = "hybrid"  # "hybrid", "screenshot_only", "dom_only"
+    dom_mode: bool = False           # extract rich DOM instead of / alongside screenshot
     max_seconds: int = 600           # wall-clock timeout; 0 = no limit
 
 

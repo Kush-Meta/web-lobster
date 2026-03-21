@@ -112,6 +112,20 @@ class Executor:
             else ""
         )
 
+        # In DOM mode, structured page context replaces the screenshot description
+        if observation.dom_structured:
+            page_context = (
+                "PAGE STRUCTURE (DOM mode — element IDs are in brackets):\n"
+                + observation.dom_structured
+                + "\n\nALL INTERACTIVE ELEMENTS:\n"
+                + observation.elements_summary(max_elements=60)
+            )
+        else:
+            page_context = (
+                "INTERACTIVE ELEMENTS (match badge numbers in screenshot):\n"
+                + observation.elements_summary(max_elements=50)
+            )
+
         prompt = f"""CURRENT SUB-GOAL: {sub_goal.goal}
 SUCCESS CRITERIA: {sub_goal.success_criteria}
 ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}{reflection_block}
@@ -120,8 +134,7 @@ PAGE STATE:
 - URL: {observation.url}
 - Title: {observation.title}
 
-INTERACTIVE ELEMENTS (match badge numbers in image):
-{observation.elements_summary(max_elements=50)}
+{page_context}
 
 ACTION HISTORY (recent):
 {action_history_text}

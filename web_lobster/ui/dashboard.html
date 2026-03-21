@@ -683,7 +683,14 @@ button{cursor:pointer}
     </div>
 
     <div class="d-section">
-      <div class="d-section-title">Browser</div>
+      <div class="d-section-title">Browser & Execution</div>
+      <div class="toggle-row">
+        <div>
+          <span class="toggle-label">DOM mode</span>
+          <div style="font-size:0.7rem;color:var(--t2);margin-top:2px">Scrape page structure instead of screenshot — faster, works on any site, no vision model needed</div>
+        </div>
+        <div class="toggle" id="dDomMode" onclick="this.classList.toggle('on')"></div>
+      </div>
       <div class="toggle-row">
         <span class="toggle-label">Headless mode</span>
         <div class="toggle" id="dHeadless" onclick="this.classList.toggle('on')"></div>
@@ -709,6 +716,24 @@ button{cursor:pointer}
     <div class="modal-btns">
       <button class="m-btn m-btn-no" onclick="resolveConfirm(false)">Decline</button>
       <button class="m-btn m-btn-ok" onclick="resolveConfirm(true)">Approve</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ LOGIN MODAL ═══════════════ -->
+<div class="modal-bg" id="loginModal" style="display:none">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-title" style="font-size:1rem">🔐 Login required</div>
+    <div class="modal-body" style="margin:12px 0 6px">
+      The agent reached a login page and paused. Log in manually in the browser window, then click <b>Done</b>.
+    </div>
+    <div id="loginUrl" style="font-size:0.75rem;color:var(--t2);background:var(--bg3);padding:6px 10px;border-radius:5px;word-break:break-all;margin-bottom:16px"></div>
+    <div style="font-size:0.78rem;color:var(--t1);margin-bottom:16px;line-height:1.5">
+      💡 Tip: after logging in the agent will automatically continue where it left off.
+    </div>
+    <div class="modal-btns">
+      <button class="m-btn" onclick="dismissLogin()" style="background:var(--bg3);color:var(--t1)">Stop agent</button>
+      <button class="m-btn m-btn-ok" onclick="loginDone()">Done — I've logged in</button>
     </div>
   </div>
 </div>
@@ -777,9 +802,15 @@ function handleEvent({type,data}){
       showAnswer(data); break;
     case 'confirm_request': showConfirm(data); break;
     case 'safety_flag': logEvent(`⚠ ${data.reason}`); break;
+    case 'login_required':
+      setPhase('paused');
+      showLoginModal(data.url);
+      logEvent(`🔐 Login required at ${data.url}`);
+      break;
+    case 'login_timeout': hideLoginModal(); logEvent('⏰ Login timed out — agent stopped'); break;
     case 'paused': setPhase('paused'); break;
-    case 'resumed': setPhase('acting'); break;
-    case 'stopped': setPhase('idle'); stopTimer(); showIdleCtrl(); setProgress(0); break;
+    case 'resumed': setPhase('acting'); hideLoginModal(); break;
+    case 'stopped': setPhase('idle'); stopTimer(); showIdleCtrl(); setProgress(0); hideLoginModal(); break;
     case 'reflection': if(data?.text) logReflect(data.text); break;
   }
 }
@@ -998,6 +1029,7 @@ async function loadConfig(){
     if(cfg.agent){$('dMaxSteps').value=cfg.agent.max_steps||100;$('dTimeout').value=cfg.agent.max_seconds||600;maxSteps=cfg.agent.max_steps||100;$('stepMax').textContent=maxSteps;}
     if(cfg.browser?.headless) $('dHeadless').classList.add('on');
     if(cfg.safety?.dry_run) $('dDryRun').classList.add('on');
+    if(cfg.agent?.dom_mode) $('dDomMode').classList.add('on');
     mcpServers=cfg.mcp_servers||[];
     renderMcpServers();
     onDBackendChange(); updateModelBadge();
@@ -1105,7 +1137,8 @@ function buildConfigPayload(){
     planner:plannerCfg,executor:executorCfg,validator:validatorCfg,
     browser:{headless:$('dHeadless').classList.contains('on')},
     safety:{dry_run:$('dDryRun').classList.contains('on')},
-    agent:{max_steps:steps,max_seconds:parseInt($('dTimeout').value)||600},
+    agent:{max_steps:steps,max_seconds:parseInt($('dTimeout').value)||600,
+           dom_mode:$('dDomMode').classList.contains('on')},
     mcp_servers:mcpServers,
   };
 }
@@ -1137,6 +1170,22 @@ async function startAgent(){
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({task,start_url:$('startUrl').value||'https://www.google.com'}),
   });
+}
+
+// ── Login detection modal ─────────────────────
+function showLoginModal(url){
+  $('loginUrl').textContent=url||'(unknown URL)';
+  $('loginModal').style.display='flex';
+}
+function hideLoginModal(){$('loginModal').style.display='none';}
+async function loginDone(){
+  hideLoginModal();
+  await fetch('/api/agent/login_done',{method:'POST'});
+  toast('Agent resumed after login','ok');
+}
+async function dismissLogin(){
+  hideLoginModal();
+  await fetch('/api/agent/stop',{method:'POST'});
 }
 
 async function pauseAgent(){

@@ -73,6 +73,9 @@ class SharedState:
         # Confirmation flow
         self._confirmation_future: Optional[asyncio.Future] = None
 
+        # Login-required flow
+        self._login_future: Optional[asyncio.Future] = None
+
     # ── Event publishing ──────────────────────────────────
 
     async def emit(self, event_type: str, **data) -> None:
@@ -220,6 +223,27 @@ class SharedState:
         """Called by the UI when user approves/declines."""
         if self._confirmation_future and not self._confirmation_future.done():
             self._confirmation_future.set_result(approved)
+
+    async def on_login_required(self, url: str) -> None:
+        """Pause and alert the UI that a login page was detected.
+
+        Blocks until the user clicks 'Done' in the UI (or times out after 5 min).
+        """
+        self.pause()
+        await self.emit("login_required", url=url)
+        loop = asyncio.get_event_loop()
+        self._login_future = loop.create_future()
+        try:
+            await asyncio.wait_for(self._login_future, timeout=300.0)
+        except asyncio.TimeoutError:
+            await self.emit("login_timeout")
+        finally:
+            self.resume()
+
+    def resolve_login(self) -> None:
+        """Called when the user signals they have finished logging in."""
+        if self._login_future and not self._login_future.done():
+            self._login_future.set_result(True)
 
     # ── Snapshot for REST API ─────────────────────────────
 

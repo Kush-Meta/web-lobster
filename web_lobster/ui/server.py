@@ -73,6 +73,8 @@ class ConfigUpdate(BaseModel):
     safety: Optional[dict] = None
     agent: Optional[dict] = None
     mcp_servers: Optional[list] = None
+    # Convenience shorthands forwarded into agent sub-dict
+    dom_mode: Optional[bool] = None
 
 
 @app.put("/api/config")
@@ -84,7 +86,11 @@ async def update_config(update: ConfigUpdate):
             status_code=409,
         )
     data = shared.config.model_dump()
-    for key, val in update.model_dump(exclude_none=True).items():
+    update_dict = update.model_dump(exclude_none=True)
+    # Forward convenience shorthands into their sub-dicts
+    if "dom_mode" in update_dict:
+        data["agent"]["dom_mode"] = update_dict.pop("dom_mode")
+    for key, val in update_dict.items():
         if key not in data:
             continue
         if isinstance(val, dict):
@@ -187,6 +193,13 @@ async def confirm_action(req: ConfirmRequest):
     """Approve or decline a safety-flagged action."""
     shared.resolve_confirmation(req.approved)
     return {"status": "confirmed", "approved": req.approved}
+
+
+@app.post("/api/agent/login_done")
+async def login_done():
+    """User signals they have finished logging in — resume the agent."""
+    shared.resolve_login()
+    return {"status": "resumed"}
 
 
 # ── WebSocket: Real-time event stream ─────────────────────

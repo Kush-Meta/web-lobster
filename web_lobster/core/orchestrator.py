@@ -307,12 +307,26 @@ class Orchestrator:
                 await self._ui_wait_if_paused()
 
                 # --- OBSERVE ---
-                include_screenshot = self.config.agent.screenshot_mode != "dom_only"
+                dom_mode = self.config.agent.dom_mode or \
+                           self.config.agent.screenshot_mode == "dom_only"
+                include_screenshot = not dom_mode
                 observation = await self.browser.observer.observe(
-                    include_screenshot=include_screenshot
+                    include_screenshot=include_screenshot,
+                    extract_dom=dom_mode,
                 )
                 self.state.current_observation = observation
                 await self._ui_emit("on_observation", observation)
+
+                # --- LOGIN DETECTION ---
+                if observation.login_detected and not getattr(self, "_login_alerted", False):
+                    self._login_alerted = True
+                    logger.info("login_required", url=observation.url)
+                    if self.ui:
+                        await self.ui.on_login_required(observation.url)
+                    else:
+                        logger.warning("login_page_detected_no_ui")
+                elif not observation.login_detected:
+                    self._login_alerted = False
 
                 # --- THINK: executor with visual grounding + reflection context ---
                 # Pass at most the last 2 reflections so the model has full context
