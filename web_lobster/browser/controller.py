@@ -2,21 +2,59 @@
 
 Handles the mapping from our Action schema to actual browser operations.
 Manages the browser lifecycle (launch, navigate, close).
+
+Clicking strategy (three-layer fallback):
+  1. Screen coordinates from the last observation's bbox — survives React/Vue/Angular
+     re-renders because the element is still visually at the same position even if
+     the DOM was rebuilt.
+  2. Stable CSS selector generated at observation time (aria-label / placeholder /
+     data-testid / id / name) — survives re-renders because it targets semantic
+     attributes, not transient DOM structure.
+  3. data-wl-id locator — fast but fragile; only used if no bbox or stable selector.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from web_lobster.core.schemas import Action, ActionType, ScrollDirection
+from web_lobster.core.schemas import Action, ActionType, Observation, PageElement, ScrollDirection
 from web_lobster.core.config import BrowserConfig
 from web_lobster.browser.observer import Observer
 from web_lobster.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# JS that waits until DOM mutations stop for `quiet_ms` milliseconds (max `timeout_ms`).
+# Essential for React/Vue/Angular SPAs that make cascading renders after each click.
+_WAIT_FOR_DOM_STABLE_JS = """
+(quiet_ms, timeout_ms) => new Promise(resolve => {
+    let timer;
+    const observer = new MutationObserver(() => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { observer.disconnect(); resolve(); }, quiet_ms);
+    });
+    observer.observe(document.body, {childList: true, subtree: true, attributes: true});
+    timer = setTimeout(() => { observer.disconnect(); resolve(); }, timeout_ms);
+})
+"""
+
+# After clicking, check whether a real input/textarea now has focus (handles
+# combobox wrappers where the inner input only appears after the click).
+_GET_FOCUSED_INPUT_JS = """
+() => {
+    const el = document.activeElement;
+    if (!el) return null;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return true;
+    // Look for a focused input *inside* the active element (custom comboboxes)
+    const inner = el.querySelector('input:not([type="hidden"]), textarea');
+    if (inner) { inner.focus(); return true; }
+    return false;
+}
+"""
 
 
 class BrowserController:
@@ -29,6 +67,9 @@ class BrowserController:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self.observer: Optional[Observer] = None
+        # Set by the orchestrator before each execute() call so the controller
+        # can use stored bbox/stable_selector for coordinate-based clicking.
+        self.last_observation: Optional[Observation] = None
 
     async def start(self, start_url: str = "about:blank") -> None:
         """Launch the browser and navigate to the start URL."""
@@ -77,16 +118,17 @@ class BrowserController:
                 case ActionType.GO_BACK:
                     await self._page.go_back(wait_until="domcontentloaded")
                 case ActionType.DONE:
-                    pass  # No browser action needed
+                    pass
                 case ActionType.SCREENSHOT:
-                    pass  # Handled by observer
+                    pass
                 case _:
                     logger.warning("unknown_action", action=action.action)
                     return False
 
-            # Brief settle time for the page to react
-            if action.action not in (ActionType.WAIT, ActionType.DONE):
-                await asyncio.sleep(0.5)
+            # Wait for React/Angular/Vue to finish re-rendering before the next step.
+            # This prevents the observer from capturing a half-rendered DOM.
+            if action.action not in (ActionType.WAIT, ActionType.DONE, ActionType.SCREENSHOT):
+                await self._wait_for_dom_stable(quiet_ms=200, timeout_ms=1500)
 
             logger.debug("action_executed", action=action.action.value)
             return True
@@ -100,24 +142,75 @@ class BrowserController:
             )
             return False
 
+    # ── Action implementations ───────────────────────────────────────────────
+
     async def _click(self, element_id: Optional[int]) -> None:
         if element_id is None:
             raise ValueError("click requires element_id")
-        locator = self._get_locator(element_id)
-        await locator.click(timeout=self.config.default_timeout * 1000)
+
+        el = self._find_element(element_id)
+
+        # Layer 1: coordinates — immune to React re-renders
+        if el and el.bbox:
+            cx = el.bbox.x + el.bbox.width / 2
+            cy = el.bbox.y + el.bbox.height / 2
+            logger.debug("click_by_coords", element_id=element_id, x=cx, y=cy)
+            await self._page.mouse.click(cx, cy)
+            return
+
+        # Layer 2: stable CSS selector
+        if el and el.stable_selector:
+            try:
+                logger.debug("click_by_stable_selector", sel=el.stable_selector)
+                await self._page.locator(el.stable_selector).first.click(
+                    timeout=5_000
+                )
+                return
+            except Exception:
+                pass
+
+        # Layer 3: data-wl-id (last resort)
+        logger.debug("click_by_wl_id", element_id=element_id)
+        await self._page.locator(f'[data-wl-id="{element_id}"]').click(
+            timeout=self.config.default_timeout * 1000
+        )
 
     async def _type(self, element_id: Optional[int], text: str) -> None:
         if element_id is None:
             raise ValueError("type requires element_id")
-        locator = self._get_locator(element_id)
-        await locator.click(timeout=self.config.default_timeout * 1000)
-        # Select-all then delete clears pre-filled content in custom
-        # components (e.g. Google Flights' React comboboxes).
+
+        el = self._find_element(element_id)
+
+        # Click the element to give it focus (using the same three-layer strategy)
+        if el and el.bbox:
+            cx = el.bbox.x + el.bbox.width / 2
+            cy = el.bbox.y + el.bbox.height / 2
+            await self._page.mouse.click(cx, cy)
+        elif el and el.stable_selector:
+            try:
+                await self._page.locator(el.stable_selector).first.click(timeout=5_000)
+            except Exception:
+                await self._page.locator(f'[data-wl-id="{element_id}"]').click(
+                    timeout=self.config.default_timeout * 1000
+                )
+        else:
+            await self._page.locator(f'[data-wl-id="{element_id}"]').click(
+                timeout=self.config.default_timeout * 1000
+            )
+
+        # Wait briefly for React to process the click and potentially mount the
+        # inner <input> (common pattern in custom comboboxes like Google Flights)
+        await asyncio.sleep(0.3)
+
+        # Ensure a real input/textarea has focus; if a combobox wrapper got the
+        # click, JS shifts focus to its inner input automatically.
+        await self._page.evaluate(_GET_FOCUSED_INPUT_JS)
+
+        # Clear any pre-filled content, then type character-by-character so
+        # autocomplete/autocorrect JavaScript listeners fire on every keystroke.
         await self._page.keyboard.press("Meta+a")
         await self._page.keyboard.press("Control+a")
         await self._page.keyboard.press("Backspace")
-        # Type to whichever element currently holds focus so that JS
-        # autocomplete listeners (keydown/keypress/input) fire correctly.
         await self._page.keyboard.type(text, delay=60)
 
     async def _scroll(self, direction: ScrollDirection) -> None:
@@ -127,27 +220,47 @@ class BrowserController:
     async def _navigate(self, url: str) -> None:
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
-        await self._page.goto(url, wait_until="domcontentloaded",
-                              timeout=self.config.default_timeout * 1000)
+        await self._page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=self.config.default_timeout * 1000,
+        )
 
     async def _select(self, element_id: Optional[int], text: str) -> None:
         if element_id is None:
             raise ValueError("select requires element_id")
-        locator = self._get_locator(element_id)
+        locator = self._page.locator(f'[data-wl-id="{element_id}"]')
         await locator.select_option(label=text, timeout=self.config.default_timeout * 1000)
 
     async def _hover(self, element_id: Optional[int]) -> None:
         if element_id is None:
             raise ValueError("hover requires element_id")
-        locator = self._get_locator(element_id)
+        el = self._find_element(element_id)
+        if el and el.bbox:
+            cx = el.bbox.x + el.bbox.width / 2
+            cy = el.bbox.y + el.bbox.height / 2
+            await self._page.mouse.move(cx, cy)
+            return
+        locator = self._page.locator(f'[data-wl-id="{element_id}"]')
         await locator.hover(timeout=self.config.default_timeout * 1000)
 
-    def _get_locator(self, element_id: int):
-        """Get a Playwright locator for an element by our internal ID.
+    # ── Helpers ──────────────────────────────────────────────────────────────
 
-        Elements are tagged with data-wl-id during observation.
-        """
-        return self._page.locator(f'[data-wl-id="{element_id}"]')
+    def _find_element(self, element_id: int) -> Optional[PageElement]:
+        """Look up a PageElement by ID from the most recent observation."""
+        if not self.last_observation:
+            return None
+        for el in self.last_observation.elements:
+            if el.id == element_id:
+                return el
+        return None
+
+    async def _wait_for_dom_stable(self, quiet_ms: int = 200, timeout_ms: int = 1500) -> None:
+        """Block until no DOM mutations occur for `quiet_ms` ms (or `timeout_ms` elapses)."""
+        try:
+            await self._page.evaluate(_WAIT_FOR_DOM_STABLE_JS, quiet_ms, timeout_ms)
+        except Exception:
+            pass  # Non-fatal — page may be navigating
 
     @property
     def current_url(self) -> str:

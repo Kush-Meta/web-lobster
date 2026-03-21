@@ -73,6 +73,28 @@ EXTRACT_ELEMENTS_JS = """
                     el.getAttribute('id') ||
                     el.tagName.toLowerCase();
 
+        // Build a stable CSS selector that survives React re-renders.
+        // Priority: aria-label > placeholder > data-testid > id > name > role+text.
+        // data-wl-id is NOT stable across renders — this is the fallback.
+        let stableSelector = null;
+        const tag = el.tagName.toLowerCase();
+        const ariaLabel = el.getAttribute('aria-label');
+        const placeholder = el.getAttribute('placeholder');
+        const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
+        const elId = el.id;
+        const elName = el.getAttribute('name');
+        if (ariaLabel) {
+            stableSelector = `[aria-label="${ariaLabel.replace(/"/g, '\\"')}"]`;
+        } else if (placeholder) {
+            stableSelector = `${tag}[placeholder="${placeholder.replace(/"/g, '\\"')}"]`;
+        } else if (testId) {
+            stableSelector = `[data-testid="${testId.replace(/"/g, '\\"')}"]`;
+        } else if (elId && !/^[0-9]/.test(elId)) {
+            stableSelector = `#${elId}`;
+        } else if (elName) {
+            stableSelector = `${tag}[name="${elName.replace(/"/g, '\\"')}"]`;
+        }
+
         results.push({
             id: id,
             role: el.getAttribute('role') || el.tagName.toLowerCase(),
@@ -80,6 +102,7 @@ EXTRACT_ELEMENTS_JS = """
             value: el.value || null,
             tag: el.tagName.toLowerCase(),
             href: el.href || null,
+            stable_selector: stableSelector,
             is_visible: inViewport,
             is_enabled: !el.disabled,
             bbox: {
@@ -207,6 +230,7 @@ class Observer:
                         value=el.get("value"),
                         tag=el.get("tag"),
                         href=el.get("href"),
+                        stable_selector=el.get("stable_selector"),
                         is_visible=el.get("is_visible", True),
                         is_enabled=el.get("is_enabled", True),
                         bbox=BoundingBox(**el["bbox"]) if el.get("bbox") else None,

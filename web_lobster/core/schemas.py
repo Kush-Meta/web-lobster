@@ -78,6 +78,7 @@ class PageElement(BaseModel):
     bbox: Optional[BoundingBox] = None # screen coordinates
     tag: Optional[str] = None          # HTML tag name
     href: Optional[str] = None         # for links
+    stable_selector: Optional[str] = None  # CSS selector that survives React re-renders
     is_visible: bool = True
     is_enabled: bool = True
 

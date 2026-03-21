@@ -428,6 +428,9 @@ class Orchestrator:
                         self.state.step_count, action_desc, observation.url
                     )
                 await self._ui_emit("on_action", action, self.state.step_count)
+                # Give the controller the current observation so it can use
+                # bbox coordinates and stable selectors instead of data-wl-id.
+                self.browser.last_observation = observation
                 success = await self.browser.execute(action)
                 self.state.action_history.append(action)
                 await self._ui_emit("on_action_result", success)
