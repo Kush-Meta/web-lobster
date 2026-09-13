@@ -1,0 +1,26 @@
+# A mandate is the scope you approve before the agent starts. The browser
+# enforces it on every request, so a page that injects instructions can't
+# steer the agent anywhere else.
+#
+#   python -m web_lobster run --mandate examples/mandate_flight_search.yaml
+
+task: >-
+  Go to Google Flights and find the cheapest round-trip flight from LAX to JFK
+  departing Dec 15 and returning Dec 22. Report the top 3 cheapest options.
+
+# Where the browser may navigate and send writes. "*." matches subdomains only.
+origins:
+  - https://www.google.com
+  - https://google.com
+  - https://*.google.com
+
+# Values the agent may type, and which sites may receive each. The model only
+# ever sees {{email}}; the browser fills in the value. A search doesn't need
+# any, so this is left as an illustration.
+# data:
+#   - name: email
+#     value: you@example.com
+#     origins:
+#       - https://www.google.com
+
+expires_in_minutes: 30

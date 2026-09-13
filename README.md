@@ -79,6 +79,36 @@ python -m web_lobster --config configs/my_config.yaml "your task here"
 - **Safety rails**: Action gating, URL allowlists, confirmation checkpoints, dry-run mode
 - **Ensemble voting**: Optional multi-model consensus for high-stakes actions
 - **Extensible actions**: Add custom browser actions via the action registry
+- **Mandates**: Scope a task to approved sites and data, enforced in the browser's network layer
+
+## Mandates
+
+The executor reads untrusted pages, so a page can plant instructions for it. Rather than trying to spot those, a mandate makes acting on them impossible: the browser, not the model, enforces where the agent may go and what it may send.
+
+```yaml
+task: Find the cheapest round-trip flight from LAX to JFK, Dec 15-22
+origins:                      # where the browser may navigate and send writes
+  - https://www.google.com
+  - https://*.google.com      # "*." matches subdomains only
+data:                         # values the agent may type, and where each may go
+  - name: email
+    value: you@example.com
+    origins: [https://www.google.com]
+expires_in_minutes: 30
+```
+
+```bash
+python -m web_lobster run --mandate examples/mandate_flight_search.yaml
+```
+
+Under a mandate:
+
+- Main-frame navigations outside `origins` are blocked, including every redirect hop.
+- POST/PUT/PATCH/DELETE requests and WebSockets to other origins are blocked.
+- The model only sees `{{email}}`. The browser fills in the value at typing time, and only on origins that grant covers. Requests carrying a granted value (raw, URL-encoded, JSON-escaped or base64) to any other origin are blocked, and granted values are redacted from logs.
+- Everything stops when the mandate expires. MCP tools are turned off, since they act outside the browser.
+
+Limits: cross-origin GETs (images, scripts) still load so pages work, which means data the agent never typed can leave that way. Values a page transforms beyond those encodings aren't detected. Redirects of non-navigation requests and WebRTC aren't checked, and a main-frame POST answered with a 307/308 is re-issued as a GET. Text in observations is redacted, but screenshots sent to a vision model can still show a value once it's typed. The dashboard doesn't accept mandates yet.
 
 ## Project Structure
 
@@ -104,6 +134,9 @@ web_lobster/
 ├── actions/
 │   ├── registry.py          # Action type registry
 │   └── safety.py            # Action gating and confirmation logic
+├── mandate/
+│   ├── schema.py            # Mandate: allowed origins, data grants, expiry
+│   └── enforcer.py          # Applies a mandate to every browser request
 ├── ui/
 │   ├── server.py            # FastAPI backend + WebSocket streaming
 │   ├── state.py             # Shared state bridge (orchestrator ↔ UI)

@@ -11,11 +11,16 @@ Clicking strategy (three-layer fallback):
      data-testid / id / name) — survives re-renders because it targets semantic
      attributes, not transient DOM structure.
   3. data-wl-id locator — fast but fragile; only used if no bbox or stable selector.
+
+With a MandateEnforcer attached, every request the browser makes is checked
+against the mandate, and {{placeholders}} in typed text resolve to granted
+values only on pages the mandate allows.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Optional, TYPE_CHECKING
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
@@ -23,6 +28,8 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from web_lobster.core.schemas import Action, ActionType, Observation, PageElement, ScrollDirection
 from web_lobster.core.config import BrowserConfig
 from web_lobster.browser.observer import Observer
+from web_lobster.mandate.enforcer import MandateEnforcer, MandateViolationError
+from web_lobster.mandate.schema import ensure_scheme
 from web_lobster.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -93,8 +100,9 @@ _CLEAR_FOCUSED_INPUT_JS = """
 class BrowserController:
     """Manages a Playwright browser instance and executes actions."""
 
-    def __init__(self, config: BrowserConfig):
+    def __init__(self, config: BrowserConfig, enforcer: Optional[MandateEnforcer] = None):
         self.config = config
+        self.enforcer = enforcer
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -106,6 +114,11 @@ class BrowserController:
 
     async def start(self, start_url: str = "about:blank") -> None:
         """Launch the browser and navigate to the start URL."""
+        if self.enforcer and start_url != "about:blank":
+            violation = self.enforcer.check_request(start_url, main_frame_navigation=True)
+            if violation:
+                raise MandateViolationError(f"Start URL rejected: {violation.detail}")
+
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=self.config.headless,
@@ -116,7 +129,11 @@ class BrowserController:
                 "width": self.config.viewport_width,
                 "height": self.config.viewport_height,
             },
+            # Service-worker requests bypass context routing, so a mandate needs them off.
+            service_workers="block" if self.enforcer else "allow",
         )
+        if self.enforcer:
+            await self.enforcer.attach(self._context)
         self._page = await self._context.new_page()
         self.observer = Observer(self._page, self.config)
 
@@ -169,11 +186,13 @@ class BrowserController:
             return True
 
         except Exception as e:
+            # Browser errors quote URLs, which can carry granted values.
+            error = self.enforcer.redact(str(e)) if self.enforcer else str(e)
             logger.error(
                 "action_failed",
                 action=action.action.value,
                 element_id=action.element_id,
-                error=str(e),
+                error=error,
             )
             return False
 
@@ -258,8 +277,16 @@ class BrowserController:
         # Small pause so the page can react to the cleared field before we type
         await asyncio.sleep(0.15)
 
-        # Type character-by-character so autocomplete listeners fire on each keystroke.
-        await self._page.keyboard.type(text, delay=70)
+        # Resolve placeholders against the page as it is now, after the focusing
+        # click, which may itself have navigated.
+        text = self._resolve_text(text)
+        if self.enforcer and self.enforcer.contains_grant(text):
+            # One input event carrying the whole value: typed key by key, page
+            # scripts could leak it as prefixes too short to recognise.
+            await self._page.keyboard.insert_text(text)
+        else:
+            # Type character-by-character so autocomplete listeners fire on each keystroke.
+            await self._page.keyboard.type(text, delay=70)
 
     async def _triple_click(self, element_id: Optional[int]) -> None:
         """Triple-click to select all text in a field — ideal for clearing pre-filled inputs."""
@@ -289,10 +316,8 @@ class BrowserController:
         await self._page.mouse.wheel(0, delta)
 
     async def _navigate(self, url: str) -> None:
-        if not url.startswith(("http://", "https://")):
-            url = f"https://{url}"
         await self._page.goto(
-            url,
+            ensure_scheme(url),
             wait_until="domcontentloaded",
             timeout=self.config.default_timeout * 1000,
         )
@@ -300,6 +325,7 @@ class BrowserController:
     async def _select(self, element_id: Optional[int], text: str) -> None:
         if element_id is None:
             raise ValueError("select requires element_id")
+        text = self._resolve_text(text)
         locator = self._page.locator(f'[data-wl-id="{element_id}"]')
         await locator.select_option(label=text, timeout=self.config.default_timeout * 1000)
 
@@ -317,6 +343,16 @@ class BrowserController:
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
+    def _resolve_text(self, text: str) -> str:
+        """Fill in {{placeholders}} with granted values the current page may receive."""
+        if not self.enforcer:
+            return text
+        resolved, violation = self.enforcer.resolve_text(text, self._page.url)
+        if violation:
+            self.enforcer.record(violation, pending=True)
+            raise MandateViolationError(violation.detail)
+        return resolved
+
     def _find_element(self, element_id: int) -> Optional[PageElement]:
         """Look up a PageElement by ID from the most recent observation."""
         if not self.last_observation:
@@ -332,6 +368,28 @@ class BrowserController:
             await self._page.evaluate(_WAIT_FOR_DOM_STABLE_JS, quiet_ms, timeout_ms)
         except Exception:
             pass  # Non-fatal — page may be navigating
+
+    async def leave_page(self) -> None:
+        """Step back off the current page, falling back to a blank one."""
+        with contextlib.suppress(Exception):
+            await self._page.go_back(wait_until="domcontentloaded")
+        if self.enforcer and self.enforcer.check_page(self.current_url, record=False):
+            await self._page.goto("about:blank")
+
+    async def recover_from_blocked_navigation(self, timeout: float = 2.0) -> None:
+        """Return to the working page after the mandate blocked a navigation.
+
+        Chromium commits its error page a moment after the request is aborted,
+        so wait for it to appear before stepping back; otherwise the next
+        observation lands mid-swap.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not self.current_url.startswith("chrome-error://"):
+            if loop.time() >= deadline:
+                return
+            await asyncio.sleep(0.05)
+        await self.leave_page()
 
     @property
     def current_url(self) -> str:

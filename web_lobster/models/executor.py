@@ -83,8 +83,13 @@ class Executor:
         actions_taken_this_subgoal: int = 0,
         reflection: Optional[str] = None,
         mcp_tools: Optional[list[dict]] = None,
+        data_placeholders: Optional[list[str]] = None,
     ) -> Action:
-        """Given the current page state and goal, pick the next action."""
+        """Given the current page state and goal, pick the next action.
+
+        data_placeholders names the user data a mandate grants. The model only
+        ever sees {{name}}; the browser substitutes the value at typing time.
+        """
 
         # Build effective system prompt, appending MCP tool info when available
         system = EXECUTOR_SYSTEM
@@ -113,6 +118,15 @@ class Executor:
             else ""
         )
 
+        data_block = (
+            "\nUSER DATA — type the placeholder exactly as shown; the browser fills in "
+            "the real value, and only on sites the user approved:\n"
+            + "\n".join(f"  {{{{{name}}}}}" for name in data_placeholders)
+            + "\n"
+            if data_placeholders
+            else ""
+        )
+
         # In DOM mode, structured page context replaces the screenshot description
         if observation.dom_structured:
             page_context = (
@@ -129,7 +143,7 @@ class Executor:
 
         prompt = f"""CURRENT SUB-GOAL: {sub_goal.goal}
 SUCCESS CRITERIA: {sub_goal.success_criteria}
-ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}{reflection_block}
+ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}{reflection_block}{data_block}
 
 PAGE STATE:
 - URL: {observation.url}

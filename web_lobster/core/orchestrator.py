@@ -9,7 +9,7 @@ Flow:
   2. For each sub-goal:
      a. Observer captures page state
      b. Executor picks an action
-     c. Safety gate checks the action
+     c. Mandate (if any) and safety gate check the action
      d. Browser executes the action
      e. Repeat until executor says "done" or budget exhausted
   3. Validator checks if sub-goal was achieved
@@ -41,6 +41,8 @@ from web_lobster.browser.controller import BrowserController
 from web_lobster.actions.safety import SafetyGate
 from web_lobster.tools.mcp_manager import MCPManager
 from web_lobster.memory.task_memory import TaskMemory, TaskRecord
+from web_lobster.mandate.enforcer import MandateEnforcer, MandateExpiredError, Violation
+from web_lobster.mandate.schema import Mandate
 from web_lobster.utils.logging import get_logger, TaskDisplay
 from web_lobster.utils.retry import StuckDetector, retry_async
 
@@ -50,8 +52,16 @@ logger = get_logger("orchestrator")
 class Orchestrator:
     """Main agent loop coordinator."""
 
-    def __init__(self, config: WebLobsterConfig, shared_state=None):
+    def __init__(
+        self,
+        config: WebLobsterConfig,
+        shared_state=None,
+        mandate: Optional[Mandate] = None,
+    ):
         self.config = config
+
+        # Mandate enforcement — None keeps the unscoped behaviour
+        self.enforcer = MandateEnforcer(mandate) if mandate else None
 
         # Initialize model backends
         self.planner_backend = self._create_backend(config.planner)
@@ -72,7 +82,7 @@ class Orchestrator:
         )
 
         # Initialize browser and safety
-        self.browser = BrowserController(config.browser)
+        self.browser = BrowserController(config.browser, enforcer=self.enforcer)
         self.safety = SafetyGate(config.safety)
         self.stuck_detector = StuckDetector()
 
@@ -168,6 +178,7 @@ class Orchestrator:
                     steps_taken=self.state.step_count,
                     elapsed_seconds=time.time() - start_time,
                     error=f"Timed out after {max_seconds}s",
+                    violations=self._violations(),
                 )
         else:
             return await self._run_inner(task, start_url, start_time, memory_context, memory_hits)
@@ -184,8 +195,12 @@ class Orchestrator:
             # 1. Launch browser
             await self.browser.start(start_url)
 
-            # 1b. Connect to MCP servers (if any configured)
-            await self.mcp.start()
+            # 1b. Connect to MCP servers (if any configured). MCP tools act outside
+            # the browser, where a mandate can't be enforced, so a mandate turns them off.
+            if not self.enforcer:
+                await self.mcp.start()
+            elif self.config.mcp_servers:
+                logger.warning("mcp_disabled_under_mandate")
             if self.mcp.has_tools:
                 logger.info("mcp_ready", tool_count=len(self.mcp.tools))
 
@@ -262,6 +277,7 @@ class Orchestrator:
                 final_url=self.browser.current_url,
                 answer=answer,
                 memory_hits=memory_hits,
+                violations=self._violations(),
             )
 
             if result.success:
@@ -272,14 +288,16 @@ class Orchestrator:
             return result
 
         except Exception as e:
-            logger.error("task_error", error=str(e))
+            error = self.enforcer.redact(str(e)) if self.enforcer else str(e)
+            logger.error("task_error", error=error)
             return AgentResult(
                 success=False,
                 task=task,
                 plan=self.state.plan,
                 steps_taken=self.state.step_count,
                 elapsed_seconds=time.time() - start_time,
-                error=str(e),
+                error=error,
+                violations=self._violations(),
             )
         finally:
             if not self.ui:
@@ -306,6 +324,9 @@ class Orchestrator:
 
                 await self._ui_wait_if_paused()
 
+                if self.enforcer and self.enforcer.mandate.is_expired():
+                    raise MandateExpiredError("Mandate expired before the task finished")
+
                 # --- OBSERVE ---
                 dom_mode = self.config.agent.dom_mode or \
                            self.config.agent.screenshot_mode == "dom_only"
@@ -314,6 +335,8 @@ class Orchestrator:
                     include_screenshot=include_screenshot,
                     extract_dom=dom_mode,
                 )
+                if self.enforcer:
+                    observation = self.enforcer.redact_observation(observation)
                 self.state.current_observation = observation
                 await self._ui_emit("on_observation", observation)
 
@@ -339,6 +362,7 @@ class Orchestrator:
                     actions_taken_this_subgoal=action_count_this_attempt - 1,
                     reflection=combined_reflection,
                     mcp_tools=self.mcp.tools if self.mcp.has_tools else None,
+                    data_placeholders=self.enforcer.placeholder_names() if self.enforcer else None,
                 )
 
                 # --- MCP TOOL CALL ---
@@ -396,6 +420,13 @@ class Orchestrator:
                         )
                         continue
 
+                # --- MANDATE CHECK (deterministic; the model can't argue past it) ---
+                if self.enforcer:
+                    violation = self.enforcer.check_action(action, observation.url)
+                    if violation:
+                        await self._report_violation(action, violation)
+                        continue
+
                 # --- SAFETY CHECK ---
                 verdict = self.safety.check(action, observation)
                 if not verdict.allowed:
@@ -435,6 +466,9 @@ class Orchestrator:
                 self.state.action_history.append(action)
                 await self._ui_emit("on_action_result", success)
 
+                if self.enforcer:
+                    await self._enforce_after_action(action)
+
                 if not success:
                     logger.warning("action_execution_failed", action=action.action.value)
 
@@ -464,6 +498,8 @@ class Orchestrator:
 
             # After action budget exhausted, check if sub-goal is actually done
             observation = await self.browser.observer.observe(include_screenshot=True)
+            if self.enforcer:
+                observation = self.enforcer.redact_observation(observation)
             self.state.current_observation = observation
             result = await self.validator.validate(observation, sub_goal)
             await self._ui_emit("on_validation", result, sub_goal)
@@ -471,6 +507,35 @@ class Orchestrator:
                 return True
 
         return False
+
+    def _violations(self) -> list[Violation]:
+        return list(self.enforcer.violations) if self.enforcer else []
+
+    async def _report_violation(self, action: Action, violation: Violation) -> None:
+        """Surface a blocked action in the UI and in the executor's history."""
+        await self._ui_emit("on_safety_flag", action, f"Mandate: {violation.detail}")
+        self.state.action_history.append(
+            Action(action=ActionType.WAIT, reason=f"Blocked by mandate: {violation.detail}")
+        )
+
+    async def _enforce_after_action(self, action: Action) -> None:
+        """Report what the network layer blocked during the action, and step off
+        any page that ended up outside the mandate anyway."""
+        if action.action in (ActionType.CLICK, ActionType.NAVIGATE, ActionType.SELECT, ActionType.GO_BACK):
+            # A click's navigation reaches the network layer a few ms after the
+            # click returns; wait for the verdict so a block is handled on this step.
+            await self.enforcer.wait_for_pending(timeout=0.25)
+        blocked = self.enforcer.drain()
+        for violation in blocked:
+            await self._report_violation(action, violation)
+        if any(v.main_frame for v in blocked):
+            # A blocked navigation leaves Chromium's error page behind; put the
+            # agent back on the page it was working on.
+            await self.browser.recover_from_blocked_navigation()
+        violation = self.enforcer.check_page(self.browser.current_url)
+        if violation:
+            await self._report_violation(action, violation)
+            await self.browser.leave_page()
 
     async def _extract_answer(self, task: str, observation) -> Optional[str]:
         """After task completion, ask the model to extract a direct answer from the page."""
@@ -620,6 +685,7 @@ class AgentResult:
         error: Optional[str] = None,
         answer: Optional[str] = None,
         memory_hits: int = 0,
+        violations: Optional[list[Violation]] = None,
     ):
         self.success = success
         self.task = task
@@ -630,6 +696,7 @@ class AgentResult:
         self.error = error
         self.answer = answer
         self.memory_hits = memory_hits
+        self.violations = violations or []
 
     def summary(self) -> str:
         status = "✓ SUCCESS" if self.success else "✗ FAILED"
@@ -645,6 +712,10 @@ class AgentResult:
             lines.append(f"  Memory: {self.memory_hits} similar past task(s) used")
         if self.error:
             lines.append(f"  Error: {self.error}")
+        if self.violations:
+            lines.append(f"  Mandate blocked {len(self.violations)} action(s):")
+            for v in self.violations[:10]:
+                lines.append(f"    ⛔ {v.kind.value}: {v.detail}")
         if self.plan:
             lines.append(f"  Sub-goals: {len(self.plan.sub_goals)}")
             for sg in self.plan.sub_goals:
