@@ -405,6 +405,49 @@ class AnthropicBackend(ModelBackend):
             observation=str(raw.get("observation", "")),
         )
 
+    async def structured(
+        self,
+        prompt: str,
+        tool: dict,
+        system: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+    ) -> dict:
+        """Force a call to `tool` and return its input: a JSON object shaped by its schema.
+
+        Forced tool_choice and temperature are accepted by the models this backend
+        targets (Sonnet 4.6, Haiku 4.5). Newer models reject one or both, like
+        decide_action and decide_validation above.
+        """
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": tool["name"]},
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system:
+            kwargs["system"] = system
+
+        response = await self._call_with_retry(**kwargs)
+
+        tool_block = next(
+            (b for b in response.content if b.type == "tool_use"),
+            None,
+        )
+        if tool_block is None:
+            logger.error("anthropic_no_structured_block", tool=tool["name"])
+            return {}
+
+        logger.debug(
+            "anthropic_structured",
+            tool=tool["name"],
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+        return dict(tool_block.input)
+
     async def is_available(self) -> bool:
         if not self._api_key and not os.environ.get("ANTHROPIC_API_KEY"):
             return False

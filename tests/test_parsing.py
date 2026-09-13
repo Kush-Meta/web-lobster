@@ -56,6 +56,26 @@ That should work!'''
         with pytest.raises(ValueError):
             self._parse('{"id": 1, "goal": "Not an array"}')
 
+    def test_value_specs_parsed(self):
+        goals = self._parse(
+            '[{"id": 1, "goal": "Open fares", "success_criteria": "Fares listed", "extract": ['
+            '{"name": "price", "type": "number"}, '
+            '{"name": "cabin", "type": "choice", "choices": ["Economy", "Business"]}]}]'
+        )
+        assert [s.name for s in goals[0].extract] == ["price", "cabin"]
+        assert goals[0].extract[1].choices == ["Economy", "Business"]
+
+    def test_malformed_value_specs_dropped(self):
+        goals = self._parse(
+            '[{"id": 1, "goal": "Open fares", "extract": ['
+            '{"name": "bad-name", "type": "number"}, {"name": "x", "type": "colour"}, '
+            '{"name": "cabin", "type": "choice"}, "price", {"name": "ok", "type": "date"}]}]'
+        )
+        assert [s.name for s in goals[0].extract] == ["ok"]
+
+    def test_missing_extract_means_none(self):
+        assert self._parse('[{"id": 1, "goal": "Go"}]')[0].extract == []
+
 
 class TestExecutorParsing:
     """Test the executor's action response parsing."""

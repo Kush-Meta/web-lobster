@@ -2,6 +2,10 @@
 
 Called once at the start, and again if the validator triggers a re-plan.
 Uses the largest available model for best reasoning quality.
+
+The planner is the trusted side of the agent and never sees page content. Its
+inputs are the user's task, its own sub-goals, counts, the current origin, and
+values that passed type checks (core/values.py).
 """
 
 from __future__ import annotations
@@ -9,9 +13,10 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from typing import Optional
+from pydantic import ValidationError
 
 from web_lobster.core.schemas import SubGoal, TaskPlan
+from web_lobster.core.values import ExtractedValue, ValueSpec
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
 
@@ -35,6 +40,14 @@ CRITICAL RULES:
 - Your final sub-goal should always be to navigate to or reach the page that contains
   the answer/result — NOT to read from it.
 
+VALUES: you never see web pages yourself. If a later sub-goal depends on something
+a page shows (a price, a date, a count, yes/no), add "extract" to the sub-goal that
+reaches that page, for example:
+  "extract": [{"name": "cheapest_price", "type": "number", "description": "lowest fare in USD"}]
+Types: number, integer, boolean, date (YYYY-MM-DD), choice (add "choices": [...]), text.
+Later sub-goals can use a value as {{$name}}. Text values go to the browser agent
+but are never shown to you.
+
 Think step by step about what a human would do to complete this task in a browser.
 
 Respond ONLY with a JSON array of sub-goals. No other text.
@@ -47,8 +60,12 @@ Example:
 ]"""
 
 REPLAN_SYSTEM = """You are a web task planner. A previous plan partially failed.
-Review what was accomplished, what failed, and create a revised plan to complete
-the remaining work. Only include sub-goals that still need to be done.
+Review what was accomplished and what failed, and create a revised plan for the
+remaining work. Only include sub-goals that still need to be done.
+
+You never see web pages. EXTRACTED VALUES were read from pages and checked against
+their types; text values are withheld from you, but any value can still be used in
+a sub-goal as {{$name}}. Sub-goals may declare "extract" as in the original plan.
 
 Respond ONLY with a JSON array of sub-goals. No other text."""
 
@@ -89,13 +106,19 @@ class Planner:
         task: str,
         completed_goals: list[SubGoal],
         failed_goal: SubGoal,
-        current_url: str,
-        error_context: str = "",
+        current_origin: str,
+        failure: str,
+        values: Optional[list[ExtractedValue]] = None,
     ) -> list[SubGoal]:
-        """Create a revised plan after a failure."""
+        """Create a revised plan after a failure.
+
+        failure must be built from counts and enums, and values must be
+        type-checked: nothing here may carry page text.
+        """
         completed_summary = "\n".join(
             f"  ✓ {sg.id}. {sg.goal}" for sg in completed_goals
         )
+        values_summary = "\n".join(f"  {v.planner_view()}" for v in values or [])
         prompt = f"""USER TASK: {task}
 
 COMPLETED SUB-GOALS:
@@ -103,9 +126,12 @@ COMPLETED SUB-GOALS:
 
 FAILED SUB-GOAL:
   ✗ {failed_goal.id}. {failed_goal.goal}
-  Failure reason: {error_context}
+  What happened: {failure}
 
-CURRENT PAGE URL: {current_url}
+CURRENT SITE: {current_origin}
+
+EXTRACTED VALUES:
+{values_summary or "  (none)"}
 
 Create a revised plan to complete the remaining work from the current state."""
 
@@ -124,9 +150,12 @@ Create a revised plan to complete the remaining work from the current state."""
         task: str,
         completed_goals: list[SubGoal],
         failed_goals: list[SubGoal],
-        answer: Optional[str],
     ) -> str:
-        """After a task run, extract key learnings for future use."""
+        """After a task run, extract key learnings for future use.
+
+        Only the task and the planner's own sub-goals go in, never the
+        page-derived answer, so the learnings are safe to show a future planner.
+        """
         goal_summary = ""
         if completed_goals:
             goal_summary += "Completed: " + "; ".join(g.goal for g in completed_goals)
@@ -135,7 +164,6 @@ Create a revised plan to complete the remaining work from the current state."""
 
         prompt = f"""Task: {task}
 {goal_summary}
-{"Answer found: " + answer if answer else "No answer extracted."}
 
 In 1-2 sentences, what is the most useful thing to know for attempting this type of task again?
 Focus on: what navigation steps worked, what failed, any tricky elements."""
@@ -180,5 +208,18 @@ Focus on: what navigation steps worked, what failed, any tricky elements."""
                 id=item.get("id", i + 1),
                 goal=item.get("goal", f"Step {i + 1}"),
                 success_criteria=item.get("success_criteria", item.get("goal", f"Step {i + 1} complete")),
+                extract=self._parse_value_specs(item.get("extract")),
             ))
         return sub_goals
+
+    def _parse_value_specs(self, raw: object) -> list[ValueSpec]:
+        """Keep the well-formed value declarations; drop the rest with a warning."""
+        if not isinstance(raw, list):
+            return []
+        specs = []
+        for item in raw:
+            try:
+                specs.append(ValueSpec(**item))
+            except (TypeError, ValidationError) as e:
+                logger.warning("planner_bad_value_spec", error=str(e).splitlines()[0][:120])
+        return specs

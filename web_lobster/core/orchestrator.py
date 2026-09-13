@@ -14,26 +14,35 @@ Flow:
      e. Repeat until executor says "done" or budget exhausted
   3. Validator checks if sub-goal was achieved
   4. If failed → retry or re-plan
-  5. If succeeded → next sub-goal
+  5. If succeeded → read any values it declared, then next sub-goal
+
+Trust boundary: the planner never sees page content. It gets the user's task,
+its own sub-goals, counts, the current origin, and type-checked values
+(core/values.py). Everything that reads pages (executor, validator, extractor,
+answer extraction) is quarantined: its free text never reaches the planner.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from typing import Optional
 
 from web_lobster.core.schemas import (
     Action,
     ActionType,
     AgentState,
+    SubGoal,
     SubGoalStatus,
     TaskPlan,
 )
 from web_lobster.core.config import WebLobsterConfig
+from web_lobster.core.values import ExtractedValue, origin_of, render_value_refs
 from web_lobster.models.planner import Planner
 from web_lobster.models.executor import Executor
 from web_lobster.models.validator import Validator
+from web_lobster.models.extractor import Extractor
 from web_lobster.models.ollama_backend import OllamaBackend
 from web_lobster.models.llamacpp_backend import LlamaCppBackend
 from web_lobster.models.anthropic_backend import AnthropicBackend
@@ -80,6 +89,11 @@ class Orchestrator:
             config.validator.temperature,
             use_vision=True,
         )
+
+        # Reads declared values off pages for the planner. It sees page text, so
+        # it runs on the executor's quarantined side; see core/values.py.
+        self.extractor = Extractor(self.executor_backend, config.executor.temperature)
+        self._goal_violations_start = 0
 
         # Initialize browser and safety
         self.browser = BrowserController(config.browser, enforcer=self.enforcer)
@@ -179,6 +193,7 @@ class Orchestrator:
                     elapsed_seconds=time.time() - start_time,
                     error=f"Timed out after {max_seconds}s",
                     violations=self._violations(),
+                    values=dict(self.state.values),
                 )
         else:
             return await self._run_inner(task, start_url, start_time, memory_context, memory_hits)
@@ -234,6 +249,8 @@ class Orchestrator:
                 success = await self._execute_subgoal(sub_goal)
 
                 if success:
+                    if sub_goal.extract:
+                        await self._extract_values(sub_goal)
                     sub_goal.status = SubGoalStatus.COMPLETED
                     logger.success("subgoal_complete", id=sub_goal.id)
                     await self._ui_emit("on_subgoal_complete", sub_goal)
@@ -278,6 +295,7 @@ class Orchestrator:
                 answer=answer,
                 memory_hits=memory_hits,
                 violations=self._violations(),
+                values=dict(self.state.values),
             )
 
             if result.success:
@@ -298,6 +316,7 @@ class Orchestrator:
                 elapsed_seconds=time.time() - start_time,
                 error=error,
                 violations=self._violations(),
+                values=dict(self.state.values),
             )
         finally:
             if not self.ui:
@@ -307,6 +326,10 @@ class Orchestrator:
 
     async def _execute_subgoal(self, sub_goal) -> bool:
         """Run the Observe → Reflect → Act loop for a single sub-goal."""
+        # Models that read pages see {{$name}} references filled in; the plan keeps
+        # the references, so filled-in text never flows back to the planner.
+        goal_view = self._render_goal(sub_goal)
+        self._goal_violations_start = len(self.enforcer.violations) if self.enforcer else 0
         self.safety.reset_counter()
         self.stuck_detector.reset()
         # Accumulated reflections: persist across multiple stuck-then-retry cycles
@@ -357,7 +380,7 @@ class Orchestrator:
                 combined_reflection = "\n\n".join(reflections[-2:]) if reflections else None
                 action = await self.executor.decide(
                     observation=observation,
-                    sub_goal=sub_goal,
+                    sub_goal=goal_view,
                     action_history_text=self.state.action_history_summary(),
                     actions_taken_this_subgoal=action_count_this_attempt - 1,
                     reflection=combined_reflection,
@@ -387,7 +410,7 @@ class Orchestrator:
                 if action.action == ActionType.DONE:
                     self.state.action_history.append(action)
                     await self._ui_emit("on_action", action, self.state.step_count)
-                    result = await self.validator.validate(observation, sub_goal)
+                    result = await self.validator.validate(observation, goal_view)
                     await self._ui_emit("on_validation", result, sub_goal)
                     if result.achieved and result.confidence >= self.config.agent.validation_confidence_threshold:
                         return True
@@ -486,7 +509,7 @@ class Orchestrator:
                     try:
                         new_reflection = await self.executor.reflect(
                             observation=observation,
-                            sub_goal=sub_goal,
+                            sub_goal=goal_view,
                             failed_actions=self.stuck_detector.get_failed_actions(),
                         )
                         reflections.append(new_reflection)
@@ -501,7 +524,7 @@ class Orchestrator:
             if self.enforcer:
                 observation = self.enforcer.redact_observation(observation)
             self.state.current_observation = observation
-            result = await self.validator.validate(observation, sub_goal)
+            result = await self.validator.validate(observation, goal_view)
             await self._ui_emit("on_validation", result, sub_goal)
             if result.achieved and result.confidence >= self.config.agent.validation_confidence_threshold:
                 return True
@@ -536,6 +559,41 @@ class Orchestrator:
         if violation:
             await self._report_violation(action, violation)
             await self.browser.leave_page()
+
+    def _render_goal(self, sub_goal: SubGoal) -> SubGoal:
+        """Copy of a sub-goal with {{$name}} references filled in for the executor."""
+        return sub_goal.model_copy(update={
+            "goal": render_value_refs(sub_goal.goal, self.state.values),
+            "success_criteria": render_value_refs(sub_goal.success_criteria, self.state.values),
+        })
+
+    async def _extract_values(self, sub_goal: SubGoal) -> None:
+        """Read the values a completed sub-goal declared off the page it reached."""
+        try:
+            observation = await self.browser.observer.observe(
+                include_screenshot=False, extract_dom=True
+            )
+        except Exception as e:
+            logger.warning("value_observation_failed", error=str(e)[:120])
+            return
+        if self.enforcer:
+            observation = self.enforcer.redact_observation(observation)
+        values = await self.extractor.extract(observation, sub_goal.extract)
+        self.state.values.update(values)
+        missing = [spec.name for spec in sub_goal.extract if spec.name not in values]
+        logger.info("values_extracted", read=sorted(values), missing=missing)
+
+    def _describe_failure(self, failed_goal: SubGoal) -> str:
+        """Why a sub-goal failed, from counts and enums only: safe for the planner."""
+        parts = [f"success criteria not confirmed after {failed_goal.attempts} attempt(s)"]
+        if self.enforcer:
+            kinds = Counter(
+                v.kind.value for v in self.enforcer.violations[self._goal_violations_start:]
+            )
+            if kinds:
+                blocked = ", ".join(f"{count}x {kind}" for kind, count in sorted(kinds.items()))
+                parts.append(f"mandate blocked {blocked}")
+        return "; ".join(parts)
 
     async def _extract_answer(self, task: str, observation) -> Optional[str]:
         """After task completion, ask the model to extract a direct answer from the page."""
@@ -582,12 +640,15 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
         ]
 
         try:
+            # Only trusted facts go to the planner: its own sub-goals, counts, the
+            # current origin, and type-checked values. Never page text or URLs.
             new_goals = await self.planner.replan(
                 task=self.state.plan.task,
                 completed_goals=completed,
                 failed_goal=failed_goal,
-                current_url=self.browser.current_url,
-                error_context=f"Failed after {failed_goal.attempts} attempts",
+                current_origin=origin_of(self.browser.current_url),
+                failure=self._describe_failure(failed_goal),
+                values=list(self.state.values.values()),
             )
 
             if not new_goals:
@@ -636,7 +697,6 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
                 task=task,
                 completed_goals=completed,
                 failed_goals=failed,
-                answer=answer,
             )
         except Exception as e:
             logger.warning("learnings_extraction_failed", error=str(e))
@@ -655,6 +715,7 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             ],
             answer=answer,
             learnings=learnings,
+            trusted=True,
         )
         self.memory.save(record)
 
@@ -686,6 +747,7 @@ class AgentResult:
         answer: Optional[str] = None,
         memory_hits: int = 0,
         violations: Optional[list[Violation]] = None,
+        values: Optional[dict[str, ExtractedValue]] = None,
     ):
         self.success = success
         self.task = task
@@ -697,6 +759,7 @@ class AgentResult:
         self.answer = answer
         self.memory_hits = memory_hits
         self.violations = violations or []
+        self.values = values or {}
 
     def summary(self) -> str:
         status = "✓ SUCCESS" if self.success else "✗ FAILED"
@@ -723,5 +786,10 @@ class AgentResult:
                 lines.append(f"    {icon.get(sg.status.value, '?')} {sg.goal}")
         if self.answer:
             lines.append(f"\n  ANSWER:\n  {self.answer}")
+        if self.values:
+            lines.append("\n  VALUES:")
+            for v in self.values.values():
+                shown = str(v.value) if len(str(v.value)) <= 80 else str(v.value)[:77] + "..."
+                lines.append(f"    {v.name} = {shown}  ({v.type.value}, {v.origin})")
         lines.append(f"{'='*50}\n")
         return "\n".join(lines)

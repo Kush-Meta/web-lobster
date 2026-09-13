@@ -5,6 +5,10 @@ After each task, the agent saves what worked (and what didn't) to disk. Before
 planning a new task, it retrieves the most similar past experiences and uses
 them as in-context examples — dramatically improving planning quality over time.
 
+Memory feeds the planner, so it holds page content back: a record's answer is
+kept for the user but never shown to the planner, and records written before
+learnings came from trusted inputs only show the planner their task and outcome.
+
 Storage: ~/.web_lobster/memories/tasks.jsonl (one JSON record per line)
 Retrieval: Jaccard similarity on word tokens, top-k results above threshold
 """
@@ -41,10 +45,14 @@ class TaskRecord:
     completed_goals: list[str] = field(default_factory=list)
     # Sub-goals that had to be replanned
     replanned_goals: list[str] = field(default_factory=list)
-    # The extracted answer (if any)
+    # The extracted answer (if any). Read from a page: for the user, never the planner.
     answer: Optional[str] = None
     # Key learnings extracted by the model after the run
     learnings: Optional[str] = None
+    # True when the plan and learnings came only from trusted inputs. Records
+    # written before planner isolation load as False, since their learnings
+    # were drawn from page-derived answers.
+    trusted: bool = False
 
 
 class TaskMemory:
@@ -110,7 +118,7 @@ class TaskMemory:
     def format_for_prompt(self, task: str, top_k: int = 3) -> Optional[str]:
         """Format similar past tasks as a prompt block for the planner.
 
-        Returns None if no relevant memories exist.
+        Returns None if no relevant memories exist. Answers are never included.
         """
         similar = self.find_similar(task, top_k=top_k)
         if not similar:
@@ -121,6 +129,9 @@ class TaskMemory:
             status = "✓ succeeded" if rec.success else "✗ failed"
             lines.append(f"\n[Memory {i}] (similarity: {score:.0%}) {status}")
             lines.append(f"Task: {rec.task}")
+            if not rec.trusted:
+                lines.append("(Plan details withheld: recorded before page content was kept out of planning.)")
+                continue
             if rec.sub_goals:
                 completed_set = set(rec.completed_goals)
                 lines.append("Plan that was used:")
@@ -129,8 +140,6 @@ class TaskMemory:
                     lines.append(f"{tick} {sg}")
             if rec.learnings:
                 lines.append(f"Key learnings: {rec.learnings}")
-            if rec.answer:
-                lines.append(f"Answer found: {rec.answer}")
 
         return "\n".join(lines)
 

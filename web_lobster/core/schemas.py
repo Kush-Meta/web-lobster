@@ -13,6 +13,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from web_lobster.core.values import ExtractedValue, ValueSpec
+
 
 # ---------------------------------------------------------------------------
 # Actions — what the executor can tell the browser to do
@@ -139,6 +141,8 @@ class SubGoal(BaseModel):
     status: SubGoalStatus = SubGoalStatus.PENDING
     attempts: int = 0
     max_attempts: int = 3
+    # Values to read off the page this sub-goal reaches (see core/values.py)
+    extract: list[ValueSpec] = Field(default_factory=list)
 
 
 class TaskPlan(BaseModel):
@@ -192,6 +196,8 @@ class AgentState(BaseModel):
     max_steps: int = 100
     replan_count: int = 0
     max_replans: int = 3
+    # Type-checked values read off pages, by name
+    values: dict[str, ExtractedValue] = Field(default_factory=dict)
     start_time: float = Field(default_factory=time.time)
 
     @property

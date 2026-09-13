@@ -80,6 +80,7 @@ python -m web_lobster --config configs/my_config.yaml "your task here"
 - **Ensemble voting**: Optional multi-model consensus for high-stakes actions
 - **Extensible actions**: Add custom browser actions via the action registry
 - **Mandates**: Scope a task to approved sites and data, enforced in the browser's network layer
+- **Planner isolation**: The planner never reads page content; pages reach it only as type-checked values
 
 ## Mandates
 
@@ -110,6 +111,23 @@ Under a mandate:
 
 Limits: cross-origin GETs (images, scripts) still load so pages work, which means data the agent never typed can leave that way. Values a page transforms beyond those encodings aren't detected. Redirects of non-navigation requests and WebRTC aren't checked, and a main-frame POST answered with a 307/308 is re-issued as a GET. Text in observations is redacted, but screenshots sent to a vision model can still show a value once it's typed. The dashboard doesn't accept mandates yet.
 
+## Planner isolation and typed values
+
+The planner decides what the agent does, so it never reads web pages: a page could write instructions into anything the planner reads. Everything that does read pages (the executor, validator, value extractor, and final-answer extraction) is quarantined, and its free text never flows back to the planner or into the planner's memory.
+
+When the plan depends on something a page shows, the planner declares a typed value on the sub-goal that reaches it:
+
+```json
+{"id": 1, "goal": "Open the fare results", "success_criteria": "Fares are listed",
+ "extract": [{"name": "price", "type": "number"}, {"name": "airline", "type": "text"}]}
+```
+
+A quarantined model reads the values, then code checks each against its type. Numbers, integers, booleans, ISO dates, and choices from the planner's own list reach the planner; `text` values reach it only as a withheld reference. Later sub-goals can use any value as `{{$name}}`, which is filled in for the executor but stays a reference in the plan.
+
+A replan sees only the planner's own sub-goals, attempt counts, mandate block counts, the current origin, and those values. Memory keeps the page-derived answer for you but never shows it to the planner, learnings are written from trusted inputs only, and records saved before this change show the planner just their task and outcome.
+
+Values come back on the result and in the run summary. Numbers use US separators (`1,209.50`); `1.209,50` is rejected rather than guessed.
+
 ## Project Structure
 
 ```
@@ -119,6 +137,7 @@ web_lobster/
 ├── core/
 │   ├── orchestrator.py      # Main agent loop coordinator
 │   ├── schemas.py           # All data contracts (Pydantic models)
+│   ├── values.py            # Typed values: the only page-to-planner channel
 │   └── config.py            # Configuration loader
 ├── models/
 │   ├── base.py              # Abstract model interface
@@ -126,6 +145,7 @@ web_lobster/
 │   ├── llamacpp_backend.py  # llama.cpp with GBNF grammar support
 │   ├── planner.py           # Task decomposition model
 │   ├── executor.py          # Single-action decision model
+│   ├── extractor.py         # Reads declared values off pages (quarantined)
 │   └── validator.py         # Vision-based goal verification
 ├── browser/
 │   ├── controller.py        # Playwright browser management
