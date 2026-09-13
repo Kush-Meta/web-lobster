@@ -30,6 +30,7 @@ except ImportError:
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.mandate.schema import Mandate
+from web_lobster.verify.receipts import write_receipts
 from web_lobster.utils.logging import print_banner, set_log_level, get_logger
 
 logger = get_logger("cli")
@@ -51,6 +52,10 @@ def cli(ctx):
     help="Mandate YAML: the task plus the sites and data it may use, enforced by the browser",
 )
 @click.option(
+    "--receipts", type=click.Path(dir_okay=False),
+    help="Write the run's chained receipts to this JSONL file",
+)
+@click.option(
     "--start-url", "-u", default=None,
     help="URL to start the browser at (default: Google, or the mandate's first origin)",
 )
@@ -58,7 +63,7 @@ def cli(ctx):
 @click.option("--headless", is_flag=True, help="Run browser in headless mode")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.option("--max-steps", type=int, default=None, help="Maximum agent steps")
-def run(task, config, mandate, start_url, dry_run, headless, verbose, max_steps):
+def run(task, config, mandate, receipts, start_url, dry_run, headless, verbose, max_steps):
     """Run a task from the command line.
 
     Examples:
@@ -68,6 +73,8 @@ def run(task, config, mandate, start_url, dry_run, headless, verbose, max_steps)
         python -m web_lobster run -u https://github.com "Star the playwright repo"
 
         python -m web_lobster run --mandate examples/mandate_flight_search.yaml
+
+        python -m web_lobster run --mandate examples/mandate_flight_search.yaml --receipts run.jsonl
     """
     print_banner()
     if verbose:
@@ -102,6 +109,9 @@ def run(task, config, mandate, start_url, dry_run, headless, verbose, max_steps)
     orchestrator = Orchestrator(cfg, mandate=task_mandate)
     result = asyncio.run(orchestrator.run(task, start_url=start_url))
     click.echo(result.summary())
+    if receipts:
+        write_receipts(result.receipts, receipts)
+        click.echo(f"  Receipts written to {receipts}\n")
     sys.exit(0 if result.success else 1)
 
 

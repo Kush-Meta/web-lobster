@@ -67,6 +67,7 @@ class AgentConfig(BaseModel):
     screenshot_mode: str = "hybrid"  # "hybrid", "screenshot_only", "dom_only"
     dom_mode: bool = False           # extract rich DOM instead of / alongside screenshot
     max_seconds: int = 600           # wall-clock timeout; 0 = no limit
+    evidence_wait_seconds: float = 5.0  # max time to re-check evidence while requests are in flight
 
 
 class WebLobsterConfig(BaseModel):

@@ -13,14 +13,17 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from web_lobster.core.schemas import SubGoal, TaskPlan
 from web_lobster.core.values import ExtractedValue, ValueSpec
+from web_lobster.verify.evidence import EvidenceCheck
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+_EVIDENCE_CHECK = TypeAdapter(EvidenceCheck)
 
 PLANNER_SYSTEM = """You are a web task planner for an autonomous browser agent.
 
@@ -48,6 +51,15 @@ Types: number, integer, boolean, date (YYYY-MM-DD), choice (add "choices": [...]
 Later sub-goals can use a value as {{$name}}. Text values go to the browser agent
 but are never shown to you.
 
+EVIDENCE: a sub-goal counts as done only when the browser can prove it. When you can
+say what success looks like, add "evidence": checks run in code, all of which must pass:
+  {"type": "url", "pattern": "https://www.united.com/confirmation/*"}
+  {"type": "request", "method": "POST", "url": "https://www.united.com/*"}  (answered 2xx/3xx)
+  {"type": "text", "contains": "Booking confirmed"}
+  {"type": "value", "name": "total_price", "op": "<=", "value": 400}
+Add a "request" check to every sub-goal that submits, books, buys, sends, or saves
+something. Without evidence, a vision model judges the page instead.
+
 Think step by step about what a human would do to complete this task in a browser.
 
 Respond ONLY with a JSON array of sub-goals. No other text.
@@ -65,7 +77,8 @@ remaining work. Only include sub-goals that still need to be done.
 
 You never see web pages. EXTRACTED VALUES were read from pages and checked against
 their types; text values are withheld from you, but any value can still be used in
-a sub-goal as {{$name}}. Sub-goals may declare "extract" as in the original plan.
+a sub-goal as {{$name}}. Sub-goals may declare "extract" and "evidence" as in the
+original plan.
 
 Respond ONLY with a JSON array of sub-goals. No other text."""
 
@@ -209,6 +222,7 @@ Focus on: what navigation steps worked, what failed, any tricky elements."""
                 goal=item.get("goal", f"Step {i + 1}"),
                 success_criteria=item.get("success_criteria", item.get("goal", f"Step {i + 1} complete")),
                 extract=self._parse_value_specs(item.get("extract")),
+                evidence=self._parse_evidence(item.get("evidence")),
             ))
         return sub_goals
 
@@ -223,3 +237,15 @@ Focus on: what navigation steps worked, what failed, any tricky elements."""
             except (TypeError, ValidationError) as e:
                 logger.warning("planner_bad_value_spec", error=str(e).splitlines()[0][:120])
         return specs
+
+    def _parse_evidence(self, raw: object) -> list:
+        """Keep the well-formed evidence checks; drop the rest with a warning."""
+        if not isinstance(raw, list):
+            return []
+        checks = []
+        for item in raw:
+            try:
+                checks.append(_EVIDENCE_CHECK.validate_python(item))
+            except ValidationError as e:
+                logger.warning("planner_bad_evidence", error=str(e).splitlines()[0][:120])
+        return checks

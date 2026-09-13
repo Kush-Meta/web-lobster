@@ -81,6 +81,13 @@ def build_sites() -> tuple[Site, Site]:
             f'  fetch("{b.origin}/collect", {{method: "POST", mode: "no-cors", body: v}});'
             "});</script>"
         ),
+        "/checkout": html(
+            '<h1>Checkout</h1><form method="post" action="/api/book">'
+            '<button type="submit">Book now</button></form>'
+        ),
+        "/api/book": (303, {"Location": "/confirmation/ABC123"}, ""),
+        "/confirmation/ABC123": html("<h1>Booking confirmed</h1><p>Reference ABC123</p>"),
+        "/fake-success": html("<h1>Booking confirmed</h1><p>Nothing was actually booked.</p>"),
         "/socket": html(f'<script>new WebSocket("ws://127.0.0.1:{b.port}/ws")</script>'),
         "/redirect-out": (302, {"Location": f"{b.origin}/landed"}, ""),
         "/redirect-home": (302, {"Location": "/"}, ""),

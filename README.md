@@ -81,6 +81,7 @@ python -m web_lobster --config configs/my_config.yaml "your task here"
 - **Extensible actions**: Add custom browser actions via the action registry
 - **Mandates**: Scope a task to approved sites and data, enforced in the browser's network layer
 - **Planner isolation**: The planner never reads page content; pages reach it only as type-checked values
+- **Evidence and receipts**: Sub-goals are proven done by checks run in code, and every run leaves a chained receipt log
 
 ## Mandates
 
@@ -128,6 +129,32 @@ A replan sees only the planner's own sub-goals, attempt counts, mandate block co
 
 Values come back on the result and in the run summary. Numbers use US separators (`1,209.50`); `1.209,50` is rejected rather than guessed.
 
+## Evidence and receipts
+
+A vision model saying "done" is an opinion, and a page can simply display "Success!". So the planner can attach evidence to a sub-goal: checks that code runs against the live browser, all of which must pass before the sub-goal counts as done.
+
+```json
+{"id": 3, "goal": "Submit the booking", "success_criteria": "Booking is confirmed",
+ "evidence": [
+   {"type": "request", "method": "POST", "url": "https://www.united.com/*"},
+   {"type": "url", "pattern": "https://www.united.com/confirmation/*"},
+   {"type": "text", "contains": "Booking confirmed"},
+   {"type": "value", "name": "total_price", "op": "<=", "value": 400}]}
+```
+
+| Check | Passes when |
+|---|---|
+| `request` | During the sub-goal, the browser sent a matching request that was answered 2xx or 3xx (`status_min`/`status_max` change the range) |
+| `url` | The page ended up at a matching URL. The host follows mandate origin rules, so a pattern can't match a lookalike host |
+| `text` | The page's full text contains the phrase, ignoring case and whitespace |
+| `value` | A typed value read on this or an earlier sub-goal compares as stated |
+
+Evidence is re-checked while the browser still has requests in flight (up to `agent.evidence_wait_seconds`, 5 seconds by default), so a redirect that's still landing isn't mistaken for a failure. When checks fail, the executor is told what's still missing and keeps working. A sub-goal without evidence falls back to the validator model, and its receipt says it was judged by a model, not verified.
+
+Every finished sub-goal gets a receipt: whether it counted as done and on what basis, each check's result, the page it ended on, and the write requests the browser actually sent (method, URL and status, never bodies). Each receipt's SHA-256 digest covers the previous one, so editing or dropping a receipt breaks the chain. That proves something only if you keep the last digest somewhere the agent can't rewrite. Receipts appear in the run summary, `--receipts run.jsonl` writes them out, and `verify_chain` in `web_lobster/verify/receipts.py` checks a file.
+
+Limits: a `text` check only proves what the page displays, so pair it with `url` or `request`. A `request` check can't see response bodies, so it proves the site accepted a write, not what was written. Evidence is only as good as the planner's idea of what success looks like, though a wrong pattern fails safe: the sub-goal isn't marked done. Confirmation emails aren't checked yet.
+
 ## Project Structure
 
 ```
@@ -157,6 +184,10 @@ web_lobster/
 ├── mandate/
 │   ├── schema.py            # Mandate: allowed origins, data grants, expiry
 │   └── enforcer.py          # Applies a mandate to every browser request
+├── verify/
+│   ├── network.py           # Log of what the browser sent and got back
+│   ├── evidence.py          # Evidence checks, evaluated in code
+│   └── receipts.py          # Chained receipts for each sub-goal
 ├── ui/
 │   ├── server.py            # FastAPI backend + WebSocket streaming
 │   ├── state.py             # Shared state bridge (orchestrator ↔ UI)

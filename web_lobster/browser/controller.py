@@ -30,6 +30,7 @@ from web_lobster.core.config import BrowserConfig
 from web_lobster.browser.observer import Observer
 from web_lobster.mandate.enforcer import MandateEnforcer, MandateViolationError
 from web_lobster.mandate.schema import ensure_scheme
+from web_lobster.verify.network import NetworkRecorder
 from web_lobster.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -103,6 +104,8 @@ class BrowserController:
     def __init__(self, config: BrowserConfig, enforcer: Optional[MandateEnforcer] = None):
         self.config = config
         self.enforcer = enforcer
+        # What the browser actually sent and got back; evidence checks read this.
+        self.network = NetworkRecorder(redact=enforcer.redact if enforcer else None)
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -132,6 +135,7 @@ class BrowserController:
             # Service-worker requests bypass context routing, so a mandate needs them off.
             service_workers="block" if self.enforcer else "allow",
         )
+        self.network.attach(self._context)
         if self.enforcer:
             await self.enforcer.attach(self._context)
         self._page = await self._context.new_page()
@@ -390,6 +394,14 @@ class BrowserController:
                 return
             await asyncio.sleep(0.05)
         await self.leave_page()
+
+    async def page_text(self) -> str:
+        """Full visible text of the page (observations truncate it), redacted under a mandate."""
+        try:
+            text = await self._page.inner_text("body")
+        except Exception:
+            return ""
+        return self.enforcer.redact(text) if self.enforcer else text
 
     @property
     def current_url(self) -> str:

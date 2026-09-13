@@ -190,6 +190,9 @@ class SharedState:
                         element_id=action.element_id,
                         reason=reason)
 
+    async def on_receipt(self, receipt) -> None:
+        await self.emit("receipt", **receipt.model_dump(mode="json"))
+
     # ── Pause / resume / confirmation ─────────────────────
 
     async def wait_if_paused(self) -> None:

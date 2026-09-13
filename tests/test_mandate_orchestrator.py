@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.agent_fakes import FakeUI
+from tests.agent_fakes import element_id as _element_id
 from tests.sites import EMAIL
 from web_lobster.core.config import MCPServerConfig, WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
@@ -20,30 +22,6 @@ from web_lobster.core.schemas import Action, ActionType, SubGoal, TaskPlan, Vali
 from web_lobster.mandate.enforcer import ViolationKind
 from web_lobster.mandate.schema import DataGrant, Mandate
 from web_lobster.memory.task_memory import TaskMemory
-
-
-class FakeUI:
-    """Stands in for the dashboard: records events and approves confirmations."""
-
-    def __init__(self):
-        self.events: list[tuple[str, tuple]] = []
-
-    def __getattr__(self, name):
-        async def record(*args, **kwargs):
-            self.events.append((name, args))
-        return record
-
-    async def wait_if_paused(self):
-        pass
-
-    async def request_confirmation(self, action, reason):
-        return True
-
-
-def _element_id(observation, label: str) -> int:
-    ids = [el.id for el in observation.elements if label in el.label]
-    assert ids, f"no {label!r} on {observation.url}; saw {[el.label for el in observation.elements]}"
-    return ids[0]
 
 
 async def test_injected_executor_is_contained_and_task_still_completes(sites, tmp_path):

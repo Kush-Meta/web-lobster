@@ -241,11 +241,20 @@ class Observer:
                 ]
 
                 # 2. Take screenshot
+                screenshot_bytes = None
                 if include_screenshot:
-                    screenshot_bytes = await self.page.screenshot(
-                        type="jpeg",
-                        quality=self.config.screenshot_quality,
-                    )
+                    try:
+                        screenshot_bytes = await self.page.screenshot(
+                            type="jpeg",
+                            quality=self.config.screenshot_quality,
+                            timeout=self.config.default_timeout * 1000,
+                        )
+                    except Exception as exc:
+                        # A page mid-navigation can stall screenshots; observe
+                        # without one rather than failing the whole task.
+                        logger.warning("screenshot_failed", error=str(exc).splitlines()[0][:120])
+
+                if screenshot_bytes:
                     screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
                     # 3. Annotate screenshot with element labels

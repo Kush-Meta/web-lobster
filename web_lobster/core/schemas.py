@@ -14,6 +14,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from web_lobster.core.values import ExtractedValue, ValueSpec
+from web_lobster.verify.evidence import EvidenceCheck
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +144,8 @@ class SubGoal(BaseModel):
     max_attempts: int = 3
     # Values to read off the page this sub-goal reaches (see core/values.py)
     extract: list[ValueSpec] = Field(default_factory=list)
+    # Checks run in code that must all pass before this sub-goal counts as done
+    evidence: list[EvidenceCheck] = Field(default_factory=list)
 
 
 class TaskPlan(BaseModel):

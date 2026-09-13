@@ -76,6 +76,26 @@ That should work!'''
     def test_missing_extract_means_none(self):
         assert self._parse('[{"id": 1, "goal": "Go"}]')[0].extract == []
 
+    def test_evidence_parsed(self):
+        goals = self._parse(
+            '[{"id": 1, "goal": "Book", "evidence": ['
+            '{"type": "request", "method": "post", "url": "https://www.united.com/*"}, '
+            '{"type": "url", "pattern": "https://www.united.com/confirmation/*"}, '
+            '{"type": "text", "contains": "Booking confirmed"}, '
+            '{"type": "value", "name": "total", "op": "<=", "value": 400}]}]'
+        )
+        assert [c.type for c in goals[0].evidence] == ["request", "url", "text", "value"]
+        assert goals[0].evidence[0].method == "POST"
+
+    def test_malformed_evidence_dropped(self):
+        goals = self._parse(
+            '[{"id": 1, "goal": "Book", "evidence": ['
+            '{"type": "url", "pattern": "https://*united.com/*"}, {"type": "screenshot"}, '
+            '{"type": "value", "name": "total", "op": "~", "value": 1}, "done", '
+            '{"type": "text", "contains": "Thanks"}]}]'
+        )
+        assert [c.type for c in goals[0].evidence] == ["text"]
+
 
 class TestExecutorParsing:
     """Test the executor's action response parsing."""

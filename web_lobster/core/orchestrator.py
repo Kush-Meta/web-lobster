@@ -12,9 +12,10 @@ Flow:
      c. Mandate (if any) and safety gate check the action
      d. Browser executes the action
      e. Repeat until executor says "done" or budget exhausted
-  3. Validator checks if sub-goal was achieved
-  4. If failed → retry or re-plan
-  5. If succeeded → read any values it declared, then next sub-goal
+  3. Verify the sub-goal: its evidence checks, run in code, or the validator
+     model when it declared none. Either way, draft a receipt.
+  4. Seal the sub-goal's receipt into the chain. If failed → retry or re-plan
+  5. If succeeded → keep any values it read, then next sub-goal
 
 Trust boundary: the planner never sees page content. It gets the user's task,
 its own sub-goals, counts, the current origin, and type-checked values
@@ -36,6 +37,7 @@ from web_lobster.core.schemas import (
     SubGoal,
     SubGoalStatus,
     TaskPlan,
+    ValidationResult,
 )
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.values import ExtractedValue, origin_of, render_value_refs
@@ -52,6 +54,14 @@ from web_lobster.tools.mcp_manager import MCPManager
 from web_lobster.memory.task_memory import TaskMemory, TaskRecord
 from web_lobster.mandate.enforcer import MandateEnforcer, MandateExpiredError, Violation
 from web_lobster.mandate.schema import Mandate
+from web_lobster.verify.evidence import EvidenceContext, evaluate
+from web_lobster.verify.receipts import (
+    MAX_RECEIPT_WRITES,
+    ModelVerdict,
+    Receipt,
+    ReceiptLog,
+    page_label,
+)
 from web_lobster.utils.logging import get_logger, TaskDisplay
 from web_lobster.utils.retry import StuckDetector, retry_async
 
@@ -94,6 +104,11 @@ class Orchestrator:
         # it runs on the executor's quarantined side; see core/values.py.
         self.extractor = Extractor(self.executor_backend, config.executor.temperature)
         self._goal_violations_start = 0
+
+        # One receipt per finished sub-goal, chained so later edits are detectable
+        self.receipts = ReceiptLog()
+        self._last_receipt: Optional[Receipt] = None
+        self._goal_network_start = 0
 
         # Initialize browser and safety
         self.browser = BrowserController(config.browser, enforcer=self.enforcer)
@@ -194,6 +209,7 @@ class Orchestrator:
                     error=f"Timed out after {max_seconds}s",
                     violations=self._violations(),
                     values=dict(self.state.values),
+                    receipts=list(self.receipts.receipts),
                 )
         else:
             return await self._run_inner(task, start_url, start_time, memory_context, memory_hits)
@@ -247,10 +263,9 @@ class Orchestrator:
                 await self._ui_emit("on_subgoal_start", sub_goal)
 
                 success = await self._execute_subgoal(sub_goal)
+                await self._seal_receipt()
 
                 if success:
-                    if sub_goal.extract:
-                        await self._extract_values(sub_goal)
                     sub_goal.status = SubGoalStatus.COMPLETED
                     logger.success("subgoal_complete", id=sub_goal.id)
                     await self._ui_emit("on_subgoal_complete", sub_goal)
@@ -296,6 +311,7 @@ class Orchestrator:
                 memory_hits=memory_hits,
                 violations=self._violations(),
                 values=dict(self.state.values),
+                receipts=list(self.receipts.receipts),
             )
 
             if result.success:
@@ -317,6 +333,7 @@ class Orchestrator:
                 error=error,
                 violations=self._violations(),
                 values=dict(self.state.values),
+                receipts=list(self.receipts.receipts),
             )
         finally:
             if not self.ui:
@@ -330,6 +347,8 @@ class Orchestrator:
         # the references, so filled-in text never flows back to the planner.
         goal_view = self._render_goal(sub_goal)
         self._goal_violations_start = len(self.enforcer.violations) if self.enforcer else 0
+        self._goal_network_start = self.browser.network.mark()
+        self._last_receipt = None
         self.safety.reset_counter()
         self.stuck_detector.reset()
         # Accumulated reflections: persist across multiple stuck-then-retry cycles
@@ -410,14 +429,9 @@ class Orchestrator:
                 if action.action == ActionType.DONE:
                     self.state.action_history.append(action)
                     await self._ui_emit("on_action", action, self.state.step_count)
-                    result = await self.validator.validate(observation, goal_view)
-                    await self._ui_emit("on_validation", result, sub_goal)
-                    if result.achieved and result.confidence >= self.config.agent.validation_confidence_threshold:
+                    if await self._verify(sub_goal, goal_view, observation):
                         return True
-                    else:
-                        logger.warning("validation_failed", confidence=result.confidence,
-                                       observation=result.observation[:80])
-                        break
+                    break
 
                 # --- ELEMENT ID VALIDATION ---
                 # Catch hallucinated or stale element IDs before they cause a
@@ -524,9 +538,7 @@ class Orchestrator:
             if self.enforcer:
                 observation = self.enforcer.redact_observation(observation)
             self.state.current_observation = observation
-            result = await self.validator.validate(observation, goal_view)
-            await self._ui_emit("on_validation", result, sub_goal)
-            if result.achieved and result.confidence >= self.config.agent.validation_confidence_threshold:
+            if await self._verify(sub_goal, goal_view, observation):
                 return True
 
         return False
@@ -567,25 +579,113 @@ class Orchestrator:
             "success_criteria": render_value_refs(sub_goal.success_criteria, self.state.values),
         })
 
-    async def _extract_values(self, sub_goal: SubGoal) -> None:
-        """Read the values a completed sub-goal declared off the page it reached."""
+    async def _read_values(self, sub_goal: SubGoal) -> dict[str, ExtractedValue]:
+        """Read the values a sub-goal declared off the page it reached."""
         try:
             observation = await self.browser.observer.observe(
                 include_screenshot=False, extract_dom=True
             )
         except Exception as e:
             logger.warning("value_observation_failed", error=str(e)[:120])
-            return
+            return {}
         if self.enforcer:
             observation = self.enforcer.redact_observation(observation)
         values = await self.extractor.extract(observation, sub_goal.extract)
-        self.state.values.update(values)
         missing = [spec.name for spec in sub_goal.extract if spec.name not in values]
-        logger.info("values_extracted", read=sorted(values), missing=missing)
+        logger.info("values_read", read=sorted(values), missing=missing)
+        return values
+
+    async def _verify(self, sub_goal: SubGoal, goal_view: SubGoal, observation) -> bool:
+        """Decide whether a sub-goal is done, and draft its receipt either way.
+
+        With evidence declared, code decides: every check must pass against the
+        live page, the network log, and typed values, and the validator model is
+        not consulted. Without evidence the validator judges the page, and the
+        receipt records that the result is a judgement, not a verification.
+        """
+        read = await self._read_values(sub_goal) if sub_goal.extract else {}
+
+        if sub_goal.evidence:
+            # Evidence can trail "done" by a moment: a redirect still landing, a
+            # response not in yet. Re-check while requests are in flight. Waiting
+            # can't make a false check pass, only let a true one arrive.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self.config.agent.evidence_wait_seconds
+            while True:
+                context = EvidenceContext(
+                    page_url=self.browser.current_url,
+                    page_text=await self.browser.page_text(),
+                    events=self.browser.network.since(self._goal_network_start),
+                    values={**self.state.values, **read},
+                )
+                checks = [evaluate(check, context) for check in sub_goal.evidence]
+                achieved = all(check.passed for check in checks)
+                if achieved or self.browser.network.settled() or loop.time() >= deadline:
+                    break
+                await asyncio.sleep(0.1)
+            writes, page = self._receipt_facts()
+            passed = sum(check.passed for check in checks)
+            verdict = ValidationResult(
+                achieved=achieved,
+                confidence=1.0 if achieved else 0.0,
+                observation=f"{passed}/{len(checks)} evidence checks passed",
+            )
+            receipt = Receipt(
+                sub_goal_id=sub_goal.id, goal=sub_goal.goal, achieved=achieved,
+                basis="evidence", checks=checks, page=page, writes=writes,
+            )
+            if not achieved:
+                unmet = "; ".join(check.description for check in checks if not check.passed)
+                # Tell the executor what's missing so it doesn't just claim done again.
+                self.state.action_history.append(
+                    Action(action=ActionType.WAIT, reason=f"Not done yet. Missing evidence: {unmet}")
+                )
+        else:
+            verdict = await self.validator.validate(observation, goal_view)
+            achieved = (
+                verdict.achieved
+                and verdict.confidence >= self.config.agent.validation_confidence_threshold
+            )
+            writes, page = self._receipt_facts()
+            receipt = Receipt(
+                sub_goal_id=sub_goal.id, goal=sub_goal.goal, achieved=achieved,
+                basis="model", page=page, writes=writes,
+                model_verdict=ModelVerdict(achieved=verdict.achieved, confidence=verdict.confidence),
+            )
+            if not achieved:
+                logger.warning("validation_failed", confidence=verdict.confidence,
+                               observation=verdict.observation[:80])
+
+        await self._ui_emit("on_validation", verdict, sub_goal)
+        if achieved:
+            self.state.values.update(read)
+        self._last_receipt = receipt
+        return achieved
+
+    def _receipt_facts(self) -> tuple[list, str]:
+        """The write requests sent during the sub-goal, and the page it ended on."""
+        events = self.browser.network.since(self._goal_network_start)
+        writes = [event for event in events if event.is_write][-MAX_RECEIPT_WRITES:]
+        return writes, page_label(self.browser.current_url)
+
+    async def _seal_receipt(self) -> None:
+        """Add the finished sub-goal's last verification to the receipt chain."""
+        if self._last_receipt is None:
+            return
+        receipt = self.receipts.append(self._last_receipt)
+        self._last_receipt = None
+        logger.info("receipt_sealed", sub_goal=receipt.sub_goal_id,
+                    achieved=receipt.achieved, basis=receipt.basis)
+        await self._ui_emit("on_receipt", receipt)
 
     def _describe_failure(self, failed_goal: SubGoal) -> str:
         """Why a sub-goal failed, from counts and enums only: safe for the planner."""
         parts = [f"success criteria not confirmed after {failed_goal.attempts} attempt(s)"]
+        receipt = self.receipts.last_for(failed_goal.id)
+        if receipt and receipt.basis == "evidence":
+            unmet = sorted({check.type for check in receipt.checks if not check.passed})
+            if unmet:
+                parts.append(f"evidence not met: {', '.join(unmet)} check(s)")
         if self.enforcer:
             kinds = Counter(
                 v.kind.value for v in self.enforcer.violations[self._goal_violations_start:]
@@ -748,6 +848,7 @@ class AgentResult:
         memory_hits: int = 0,
         violations: Optional[list[Violation]] = None,
         values: Optional[dict[str, ExtractedValue]] = None,
+        receipts: Optional[list[Receipt]] = None,
     ):
         self.success = success
         self.task = task
@@ -760,6 +861,7 @@ class AgentResult:
         self.memory_hits = memory_hits
         self.violations = violations or []
         self.values = values or {}
+        self.receipts = receipts or []
 
     def summary(self) -> str:
         status = "✓ SUCCESS" if self.success else "✗ FAILED"
@@ -791,5 +893,12 @@ class AgentResult:
             for v in self.values.values():
                 shown = str(v.value) if len(str(v.value)) <= 80 else str(v.value)[:77] + "..."
                 lines.append(f"    {v.name} = {shown}  ({v.type.value}, {v.origin})")
+        if self.receipts:
+            verified = sum(r.achieved and r.basis == "evidence" for r in self.receipts)
+            judged = sum(r.achieved and r.basis == "model" for r in self.receipts)
+            lines.append(f"\n  RECEIPTS: {verified} verified by evidence, {judged} judged by model")
+            for r in self.receipts:
+                lines.append(f"    {r.summary_line()}")
+            lines.append(f"    chain head: {self.receipts[-1].digest[:16]}")
         lines.append(f"{'='*50}\n")
         return "\n".join(lines)
