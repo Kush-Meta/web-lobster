@@ -79,11 +79,11 @@ class SafetyGate:
         # Form submission detection
         if action.action == ActionType.TYPE and action.element_id:
             element = self._find_element(action.element_id, observation)
-            if element and element.tag == "input" and element.role in ("password", "email"):
+            if element and element.input_type in ("password", "email"):
                 return SafetyVerdict(
                     allowed=True,
                     needs_confirmation=True,
-                    reason=f"Entering data in sensitive field: {element.role}",
+                    reason=f"Entering data in sensitive field: {element.input_type}",
                 )
 
         return SafetyVerdict(allowed=True)

@@ -78,6 +78,7 @@ class PageElement(BaseModel):
     value: Optional[str] = None        # current value for inputs
     bbox: Optional[BoundingBox] = None # screen coordinates
     tag: Optional[str] = None          # HTML tag name
+    input_type: Optional[str] = None   # type attribute for <input> (password, email, ...)
     href: Optional[str] = None         # for links
     stable_selector: Optional[str] = None  # CSS selector that survives React re-renders
     is_visible: bool = True

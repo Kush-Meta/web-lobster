@@ -69,6 +69,18 @@ class TestSafetyGate:
         assert verdict.allowed is False
         assert "Exceeded" in verdict.reason
 
+    def test_flags_password_field(self):
+        # The observer reports <input type="password"> with role "input"; the
+        # gate has to look at input_type or it never fires.
+        gate = SafetyGate(SafetyConfig())
+        obs = _make_observation(elements=[
+            PageElement(id=1, role="input", label="Password", tag="input", input_type="password"),
+        ])
+        action = Action(action=ActionType.TYPE, element_id=1, text="hunter22")
+        verdict = gate.check(action, obs)
+        assert verdict.needs_confirmation is True
+        assert "password" in verdict.reason
+
 
 class TestStuckDetector:
     def test_not_stuck_initially(self):
