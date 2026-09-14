@@ -11,6 +11,7 @@ values that passed type checks (core/values.py).
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 from pydantic import TypeAdapter, ValidationError
@@ -18,6 +19,7 @@ from pydantic import TypeAdapter, ValidationError
 from web_lobster.core.schemas import SubGoal, TaskPlan
 from web_lobster.core.values import ExtractedValue, ValueSpec
 from web_lobster.verify.evidence import EvidenceCheck
+from web_lobster.verify.receipts import page_label
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
 
@@ -25,23 +27,63 @@ logger = get_logger(__name__)
 
 _EVIDENCE_CHECK = TypeAdapter(EvidenceCheck)
 
+# Sub-goals that only read what a page shows. Values are read off the page a sub-goal
+# reaches, so a separate "Extract the version number" step just sends the executor
+# clicking around the page that already has the answer.
+_READ_ONLY_GOAL = re.compile(
+    r"^\s*(extract|read|note|record|report|identify|determine|retrieve|copy|write down)\b",
+    re.IGNORECASE,
+)
+# Keys models use for the goal text when they don't use "goal".
+_GOAL_KEYS = ("goal", "description", "sub_goal", "subgoal", "task", "name")
+
+
+def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
+    """Undo plan mistakes small models make despite the prompt.
+
+    - A sub-goal that only reads information, with no evidence, is dropped, and
+      the values it declared move to the sub-goal before it.
+    - A "url" check that spells out a query string is dropped. Search and results
+      URLs are where guesses go wrong (sites encode and order parameters their own
+      way, or send a search straight to an article), and a check that can never
+      pass makes its sub-goal impossible to finish.
+    """
+    kept: list[SubGoal] = []
+    for goal in sub_goals:
+        checks = [c for c in goal.evidence if not (c.type == "url" and "?" in c.pattern)]
+        if len(checks) < len(goal.evidence):
+            logger.warning("planner_query_url_check_dropped", sub_goal=goal.id)
+            goal.evidence = checks
+        if kept and not goal.evidence and _READ_ONLY_GOAL.match(goal.goal):
+            names = {spec.name for spec in kept[-1].extract}
+            kept[-1].extract.extend(spec for spec in goal.extract if spec.name not in names)
+            logger.info("planner_read_only_sub_goal_dropped", sub_goal=goal.id)
+            continue
+        kept.append(goal)
+    return kept
+
 PLANNER_SYSTEM = """You are a web task planner for an autonomous browser agent.
 
 Given a user's task, decompose it into a sequence of sub-goals that a browser
 agent can execute. Each sub-goal should be:
 
-1. Achievable in 1-15 browser actions (click, type, scroll, navigate)
+1. An outcome a person would notice ("Open the Mount Everest article"), not a single
+   click or keystroke. Most tasks need only 1-3 sub-goals.
 2. Verifiable — you can tell if it succeeded by looking at the page
 3. Ordered — later goals may depend on earlier ones
 4. Specific — avoid vague goals like "find information"
 
 CRITICAL RULES:
-- Sub-goals must be NAVIGATION actions only: go to pages, click links, fill forms, search.
+- Sub-goals are things to get done in the browser: open a page, run a search, fill in
+  and submit a form. The browser agent works out the clicks and typing itself.
 - Do NOT create sub-goals for "extracting", "reading", "reporting", "finding" or
   "identifying" specific information. Information extraction is handled automatically
   after navigation completes — you must NOT include it as a sub-goal.
 - Your final sub-goal should always be to navigate to or reach the page that contains
   the answer/result — NOT to read from it.
+  WRONG final sub-goal: "Extract the tower's height from the article".
+  RIGHT final sub-goal: "Open the Eiffel Tower article".
+- If you're told where the browser starts, don't plan steps to get there.
 
 VALUES: you never see web pages yourself. If a later sub-goal depends on something
 a page shows (a price, a date, a count, yes/no), add "extract" to the sub-goal that
@@ -57,18 +99,24 @@ say what success looks like, add "evidence": checks run in code, all of which mu
   {"type": "request", "method": "POST", "url": "https://www.united.com/*"}  (answered 2xx/3xx)
   {"type": "text", "contains": "Booking confirmed"}
   {"type": "value", "name": "total_price", "op": "<=", "value": 400}
+Give a sub-goal evidence when you can say for sure what success looks like. Only use
+a "url" check for a URL you're sure of: never guess query strings or search-result
+URLs, because a wrong guess makes the sub-goal impossible to finish. When unsure,
+check for text the target page must show, or leave evidence out.
 Add a "request" check to every sub-goal that submits, books, buys, sends, or saves
-something. Without evidence, a vision model judges the page instead.
+something. Without evidence, a model judges the page instead, which is easy to fool.
 
 Think step by step about what a human would do to complete this task in a browser.
 
 Respond ONLY with a JSON array of sub-goals. No other text.
 
-Example:
+Example, for "Find the cheapest round trip from LAX to JFK, Dec 15-22":
 [
-  {"id": 1, "goal": "Navigate to Google Flights", "success_criteria": "Google Flights search page is visible with departure/arrival fields"},
-  {"id": 2, "goal": "Enter LAX as departure airport", "success_criteria": "LAX is selected in the departure field"},
-  {"id": 3, "goal": "Enter JFK as arrival airport", "success_criteria": "JFK is selected in the arrival field"}
+  {"id": 1, "goal": "Open Google Flights", "success_criteria": "The flight search form is visible",
+   "evidence": [{"type": "url", "pattern": "https://www.google.com/travel/flights*"}]},
+  {"id": 2, "goal": "Search for round trips from LAX to JFK, Dec 15 to Dec 22",
+   "success_criteria": "Flight results for LAX to JFK on those dates are listed",
+   "extract": [{"name": "cheapest_price", "type": "number", "description": "lowest round-trip fare in USD"}]}
 ]"""
 
 REPLAN_SYSTEM = """You are a web task planner. A previous plan partially failed.
@@ -90,11 +138,19 @@ class Planner:
         self.backend = backend
         self.temperature = temperature
 
-    async def plan(self, task: str, memory_context: Optional[str] = None) -> TaskPlan:
-        """Decompose a task into sub-goals."""
+    async def plan(
+        self, task: str, memory_context: Optional[str] = None, start_url: Optional[str] = None,
+    ) -> TaskPlan:
+        """Decompose a task into sub-goals.
+
+        start_url comes from the user, not a page. Only its origin and path are
+        shown: query strings often carry tokens.
+        """
         logger.info("planning", task=task)
 
         prompt = f"USER TASK: {task}"
+        if start_url:
+            prompt += f"\nTHE BROWSER STARTS AT: {page_label(start_url)}"
         if memory_context:
             prompt = f"{memory_context}\n\n{prompt}"
 
@@ -217,14 +273,19 @@ Focus on: what navigation steps worked, what failed, any tricky elements."""
             # Model may return plain strings instead of dicts
             if isinstance(item, str):
                 item = {"goal": item}
+            goal = next(
+                (item[key].strip() for key in _GOAL_KEYS
+                 if isinstance(item.get(key), str) and item[key].strip()),
+                f"Step {i + 1}",
+            )
             sub_goals.append(SubGoal(
                 id=item.get("id", i + 1),
-                goal=item.get("goal", f"Step {i + 1}"),
-                success_criteria=item.get("success_criteria", item.get("goal", f"Step {i + 1} complete")),
+                goal=goal,
+                success_criteria=item.get("success_criteria", goal),
                 extract=self._parse_value_specs(item.get("extract")),
                 evidence=self._parse_evidence(item.get("evidence")),
             ))
-        return sub_goals
+        return tidy_sub_goals(sub_goals)
 
     def _parse_value_specs(self, raw: object) -> list[ValueSpec]:
         """Keep the well-formed value declarations; drop the rest with a warning."""

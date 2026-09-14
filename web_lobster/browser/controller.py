@@ -49,6 +49,14 @@ _WAIT_FOR_DOM_STABLE_JS = """
 })
 """
 
+# The page's main content, when it marks one, without menus and footers.
+_MAIN_TEXT_JS = """
+() => {
+    const main = document.querySelector('main, [role="main"], article') || document.body;
+    return main ? main.innerText : '';
+}
+"""
+
 # After clicking, check whether a real input/textarea now has focus (handles
 # combobox wrappers where the inner input only appears after the click).
 _GET_FOCUSED_INPUT_JS = """
@@ -395,13 +403,22 @@ class BrowserController:
             await asyncio.sleep(0.05)
         await self.leave_page()
 
-    async def page_text(self) -> str:
-        """Full visible text of the page (observations truncate it), redacted under a mandate."""
+    async def page_text(self, main_only: bool = False, limit: Optional[int] = None) -> str:
+        """Visible text of the page (observations truncate it), redacted under a mandate.
+
+        main_only reads the page's main content (<main>, [role=main] or <article>)
+        when it has one, skipping navigation menus that can crowd out what matters.
+        """
         try:
-            text = await self._page.inner_text("body")
+            if main_only:
+                text = await self._page.evaluate(_MAIN_TEXT_JS)
+            else:
+                text = await self._page.inner_text("body")
         except Exception:
             return ""
-        return self.enforcer.redact(text) if self.enforcer else text
+        # Redact before truncating, so a cut can't leave part of a granted value behind.
+        text = self.enforcer.redact(text) if self.enforcer else text
+        return text[:limit] if limit else text
 
     @property
     def current_url(self) -> str:

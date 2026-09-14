@@ -16,7 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from web_lobster.core.schemas import Action, ActionType
-from web_lobster.mandate.enforcer import MandateEnforcer, ViolationKind
+from web_lobster.mandate.enforcer import MandateEnforcer, Violation, ViolationKind, worth_reporting
 from web_lobster.mandate.schema import (
     DataGrant,
     Mandate,
@@ -355,3 +355,15 @@ class TestWriteRules:
         assert [str(rule) for rule in Mandate.from_yaml(path).writes] == [
             "POST https://www.united.com/api/rebook*",
         ]
+
+
+def test_executor_hears_about_blocks_its_own_actions_could_cause():
+    def blocked(kind, resource_type, main_frame=False):
+        return Violation(kind=kind, url=f"{SHOP}/x", detail="d", resource_type=resource_type,
+                         main_frame=main_frame)
+
+    assert worth_reporting(blocked(ViolationKind.NAVIGATION, "document", main_frame=True))
+    assert worth_reporting(blocked(ViolationKind.UNAPPROVED_WRITE, "fetch"))  # an app's submit button
+    assert worth_reporting(blocked(ViolationKind.DATA_LEAK, "other"))
+    assert not worth_reporting(blocked(ViolationKind.CROSS_ORIGIN_WRITE, "other"))  # third-party error reporting
+    assert not worth_reporting(blocked(ViolationKind.UNAPPROVED_WRITE, "ping"))  # analytics beacon

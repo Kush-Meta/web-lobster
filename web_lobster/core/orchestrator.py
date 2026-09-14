@@ -26,6 +26,7 @@ answer extraction) is quarantined: its free text never reaches the planner.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import Counter
 from typing import Optional
@@ -44,7 +45,7 @@ from web_lobster.core.values import ExtractedValue, origin_of, render_value_refs
 from web_lobster.models.planner import Planner
 from web_lobster.models.executor import Executor
 from web_lobster.models.validator import Validator
-from web_lobster.models.extractor import Extractor
+from web_lobster.models.extractor import PAGE_TEXT_LIMIT, Extractor
 from web_lobster.models.ollama_backend import OllamaBackend
 from web_lobster.models.llamacpp_backend import LlamaCppBackend
 from web_lobster.models.anthropic_backend import AnthropicBackend
@@ -66,6 +67,24 @@ from web_lobster.utils.logging import get_logger, TaskDisplay
 from web_lobster.utils.retry import StuckDetector, retry_async
 
 logger = get_logger("orchestrator")
+
+
+# Sub-goals that only take the browser to a page.
+_NAVIGATION_GOAL = re.compile(
+    r"^\s*(open|go to|navigate to|visit|load|return to|get to)\b", re.IGNORECASE
+)
+
+
+def collapse_violations(violations: list[Violation]) -> list[tuple[Violation, int]]:
+    """Group repeats of the same blocked request, keeping the first of each and a count."""
+    groups: dict[tuple, list] = {}
+    for violation in violations:
+        key = (violation.kind, violation.detail)
+        if key in groups:
+            groups[key][1] += 1
+        else:
+            groups[key] = [violation, 1]
+    return [(violation, count) for violation, count in groups.values()]
 
 
 class Orchestrator:
@@ -97,7 +116,7 @@ class Orchestrator:
         self.validator = Validator(
             self.validator_backend,
             config.validator.temperature,
-            use_vision=True,
+            use_vision=config.validator.vision,
         )
 
         # Reads declared values off pages for the planner. It sees page text, so
@@ -148,6 +167,7 @@ class Orchestrator:
                 model=model_config.model,
                 base_url=model_config.base_url,
                 timeout=model_config.timeout,
+                context_window=model_config.context_window,
             )
 
     async def _ui_emit(self, method_name: str, *args, **kwargs) -> None:
@@ -239,6 +259,7 @@ class Orchestrator:
             plan = await retry_async(
                 self.planner.plan, task,
                 memory_context,
+                start_url,
                 max_retries=2,
                 base_delay=2.0,
             )
@@ -271,6 +292,8 @@ class Orchestrator:
                     await self._ui_emit("on_subgoal_complete", sub_goal)
                     if not self.ui:
                         self._refresh_display()
+                elif await self._skip_to_later_goal(plan, sub_goal):
+                    continue  # the loop resumes at the later sub-goal, already met
                 else:
                     if self.state.replan_count < self.state.max_replans:
                         logger.warning("subgoal_failed_replanning", id=sub_goal.id)
@@ -354,6 +377,12 @@ class Orchestrator:
         # Accumulated reflections: persist across multiple stuck-then-retry cycles
         # so the model never loses the diagnostic history of this sub-goal.
         reflections: list[str] = []
+
+        if await self._already_there(sub_goal) and await self._verify(
+            sub_goal, goal_view, self.state.current_observation
+        ):
+            logger.info("subgoal_already_met", id=sub_goal.id)
+            return True
 
         for attempt in range(sub_goal.max_attempts):
             sub_goal.attempts = attempt + 1
@@ -546,6 +575,51 @@ class Orchestrator:
 
         return False
 
+    async def _already_there(self, sub_goal: SubGoal) -> bool:
+        """Whether a sub-goal that only opens a page is already met, before any action.
+
+        Plans often start with "Open the downloads page" when the browser starts
+        there, and the executor then clicks around a page it should stay on. This
+        applies only to goals that open a page, with a url check pinning the page
+        and no request check (a write has to happen during the sub-goal).
+        """
+        checks = sub_goal.evidence
+        if (
+            not _NAVIGATION_GOAL.match(sub_goal.goal)
+            or not any(check.type == "url" for check in checks)
+            or any(check.type == "request" for check in checks)
+        ):
+            return False
+        context = EvidenceContext(
+            page_url=self.browser.current_url,
+            page_text=await self.browser.page_text(),
+            events=[],
+            values=dict(self.state.values),
+        )
+        return all(evaluate(check, context).passed for check in checks)
+
+    async def _skip_to_later_goal(self, plan: TaskPlan, failed: SubGoal) -> bool:
+        """After a sub-goal fails, jump ahead if the browser is provably at a later one.
+
+        Small planners split one search into "type the query" and "open the result".
+        Typing and pressing Enter lands on the result, and the typing step then fails
+        its own check. When a later open-a-page sub-goal is already met, the steps
+        before it are skipped instead of replanned. Never across a sub-goal with a
+        request check: skipped sub-goals count toward completion, and a write it
+        required would never have been proven.
+        """
+        pending = [goal for goal in plan.sub_goals if goal.status == SubGoalStatus.PENDING]
+        for index, later in enumerate(pending):
+            skipped = [failed, *pending[:index]]
+            if any(check.type == "request" for goal in skipped for check in goal.evidence):
+                return False
+            if await self._already_there(later):
+                for goal in skipped:
+                    goal.status = SubGoalStatus.SKIPPED
+                logger.info("subgoals_superseded", failed=failed.id, resume_at=later.id)
+                return True
+        return False
+
     def _mandate_approves(self, action: Action, page_url: str) -> bool:
         """Whether the mandate already approved this action: typing only granted data where allowed."""
         if not self.enforcer or action.action != ActionType.TYPE or not action.text:
@@ -555,11 +629,12 @@ class Orchestrator:
     def _violations(self) -> list[Violation]:
         return list(self.enforcer.violations) if self.enforcer else []
 
-    async def _report_violation(self, action: Action, violation: Violation) -> None:
+    async def _report_violation(self, action: Action, violation: Violation, count: int = 1) -> None:
         """Surface a blocked action in the UI and in the executor's history."""
-        await self._ui_emit("on_safety_flag", action, f"Mandate: {violation.detail}")
+        detail = violation.detail + (f" ({count} times)" if count > 1 else "")
+        await self._ui_emit("on_safety_flag", action, f"Mandate: {detail}")
         self.state.action_history.append(
-            Action(action=ActionType.WAIT, reason=f"Blocked by mandate: {violation.detail}")
+            Action(action=ActionType.WAIT, reason=f"Blocked by mandate: {detail}")
         )
 
     async def _enforce_after_action(self, action: Action) -> None:
@@ -570,8 +645,9 @@ class Orchestrator:
             # click returns; wait for the verdict so a block is handled on this step.
             await self.enforcer.wait_for_pending(timeout=0.25)
         blocked = self.enforcer.drain()
-        for violation in blocked:
-            await self._report_violation(action, violation)
+        # A page can repeat the same blocked request many times; tell the executor once.
+        for violation, count in collapse_violations(blocked):
+            await self._report_violation(action, violation, count)
         if any(v.main_frame for v in blocked):
             # A blocked navigation leaves Chromium's error page behind; put the
             # agent back on the page it was working on.
@@ -599,6 +675,11 @@ class Orchestrator:
             return {}
         if self.enforcer:
             observation = self.enforcer.redact_observation(observation)
+        # Read the page's main content: an observation's truncated text often stops
+        # inside the site's menus. (The controller redacts it under a mandate.)
+        main_text = await self.browser.page_text(main_only=True, limit=PAGE_TEXT_LIMIT)
+        if main_text:
+            observation = observation.model_copy(update={"page_text": main_text})
         values = await self.extractor.extract(observation, sub_goal.extract)
         missing = [spec.name for spec in sub_goal.extract if spec.name not in values]
         logger.info("values_read", read=sorted(values), missing=missing)
@@ -706,11 +787,9 @@ class Orchestrator:
 
     async def _extract_answer(self, task: str, observation) -> Optional[str]:
         """After task completion, ask the model to extract a direct answer from the page."""
-        page_content = ""
-        if observation.page_text:
-            page_content = observation.page_text[:3000]
-        elif observation.accessibility_tree:
-            page_content = observation.accessibility_tree[:3000]
+        page_content = await self.browser.page_text(main_only=True, limit=PAGE_TEXT_LIMIT)
+        if not page_content:
+            page_content = (observation.page_text or observation.accessibility_tree or "")[:3000]
 
         prompt = f"""The user asked: "{task}"
 
@@ -888,8 +967,9 @@ class AgentResult:
             lines.append(f"  Error: {self.error}")
         if self.violations:
             lines.append(f"  Mandate blocked {len(self.violations)} action(s):")
-            for v in self.violations[:10]:
-                lines.append(f"    ⛔ {v.kind.value}: {v.detail}")
+            for v, count in collapse_violations(self.violations)[:10]:
+                repeats = f" (x{count})" if count > 1 else ""
+                lines.append(f"    ⛔ {v.kind.value}: {v.detail}{repeats}")
         if self.plan:
             lines.append(f"  Sub-goals: {len(self.plan.sub_goals)}")
             for sg in self.plan.sub_goals:

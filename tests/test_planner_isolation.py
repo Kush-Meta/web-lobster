@@ -92,7 +92,10 @@ async def test_planner_never_sees_page_content(sites, tmp_path):
     for prompt in planner.prompts:
         assert "CANARY" not in prompt
         assert "Evil Air" not in prompt
-        assert "/fare" not in prompt
+    # The plan hears where the browser starts (the caller's URL, without its query);
+    # later prompts get no paths at all.
+    assert f"THE BROWSER STARTS AT: {a.origin}/fare\n" in planner.prompts[0] + "\n"
+    assert all("/fare" not in prompt for prompt in planner.prompts[1:])
 
     replan_prompt = planner.prompts[1]
     assert "{{$price}} = 1209.5 (number" in replan_prompt

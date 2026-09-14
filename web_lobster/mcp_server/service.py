@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import AgentResult, Orchestrator
 from web_lobster.core.values import ValueType, origin_of
+from web_lobster.mandate.enforcer import Violation, sent_by_page_script
 from web_lobster.mandate.schema import DataGrant, Mandate
 from web_lobster.mcp_server.agents import ProgressFn, ServerUI, ValueRequestingPlanner
 from web_lobster.mcp_server.models import (
@@ -104,6 +105,19 @@ def approval_text(task: str, spec: MandateInput) -> str:
         lines.append("Writes: none (read-only)")
     lines.append(f"Expires: {spec.expires_in_minutes:g} minutes after it starts")
     return "\n".join(lines)
+
+
+def blocked_actions(violations: list[Violation]) -> list[BlockedAction]:
+    """Group what the mandate blocked by kind and site, flagging requests the page's scripts sent."""
+    grouped: dict[tuple[str, str, bool], BlockedAction] = {}
+    for violation in violations:
+        background = sent_by_page_script(violation)
+        key = (violation.kind.value, origin_of(violation.url), background)
+        if key in grouped:
+            grouped[key].count += 1
+        else:
+            grouped[key] = BlockedAction(kind=key[0], site=key[1], background=background)
+    return list(grouped.values())
 
 
 class WebTaskService:
@@ -226,7 +240,7 @@ class WebTaskService:
             )
         completed = [r for r in agent.receipts if r.achieved]
         verified = agent.success and bool(completed) and all(r.basis == "evidence" for r in completed)
-        blocked = [BlockedAction(kind=v.kind.value, site=origin_of(v.url)) for v in agent.violations]
+        blocked = blocked_actions(agent.violations)
 
         return WebTaskResult(
             run_id=run_id,
@@ -257,7 +271,13 @@ class WebTaskService:
         else:
             parts = [f"Not done: {completed} sub-goal(s) completed, {len(receipts) - completed} did not."]
         if blocked:
-            parts.append(f"The mandate blocked {len(blocked)} action(s).")
+            total = sum(b.count for b in blocked)
+            background = sum(b.count for b in blocked if b.background)
+            note = (
+                f", {background} of them sent by the page's own scripts, such as analytics and error reporting"
+                if background else ""
+            )
+            parts.append(f"The mandate blocked {total} request(s){note}.")
         if error:
             parts.append("The run stopped with an error.")
         return " ".join(parts)

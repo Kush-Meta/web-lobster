@@ -121,6 +121,78 @@ async def test_page_displaying_success_is_not_enough(sites, tmp_path):
     assert failure.endswith("evidence not met: request check(s)")
 
 
+async def test_open_page_goal_already_met_takes_no_steps(sites, tmp_path):
+    a, _ = sites
+    goal = SubGoal(id=1, goal="Open the checkout page", success_criteria="Checkout is visible",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+
+    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    orchestrator.executor.decide.assert_not_called()
+    assert result.steps_taken == 0
+    [receipt] = result.receipts
+    assert receipt.achieved and receipt.basis == "evidence"
+
+
+async def test_goal_that_acts_on_the_page_still_runs_when_its_url_already_matches(sites, tmp_path):
+    a, _ = sites
+    goal = SubGoal(id=1, goal=TASK, success_criteria="Booking is confirmed",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+
+    result = await orchestrator.run(TASK, start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    orchestrator.executor.decide.assert_called()
+
+
+def _typing_then_opening(a, typing_evidence=()) -> TaskPlan:
+    return TaskPlan(task="Open checkout", sub_goals=[
+        SubGoal(id=1, goal="Type the order number into the search box",
+                success_criteria="The search box holds the order number", evidence=list(typing_evidence)),
+        SubGoal(id=2, goal="Open the checkout page", success_criteria="Checkout is visible",
+                evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")]),
+    ])
+
+
+async def test_failed_step_is_skipped_when_the_browser_is_already_at_a_later_one(sites, tmp_path):
+    a, _ = sites
+    orchestrator, _ = _orchestrator(tmp_path, SubGoal(id=1, goal="unused", success_criteria="unused"))
+    orchestrator.planner.plan = AsyncMock(return_value=_typing_then_opening(a))
+    orchestrator.validator.validate = AsyncMock(
+        return_value=ValidationResult(achieved=False, confidence=0.9, observation="box is empty")
+    )
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+
+    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    orchestrator.planner.replan.assert_not_called()
+    assert [g.status.value for g in result.plan.sub_goals] == ["skipped", "completed"]
+    assert [(r.sub_goal_id, r.achieved) for r in result.receipts] == [(1, False), (2, True)]
+
+
+async def test_never_skips_past_a_step_that_had_to_send_a_write(sites, tmp_path):
+    a, _ = sites
+    orchestrator, _ = _orchestrator(tmp_path, SubGoal(id=1, goal="unused", success_criteria="unused"))
+    plan = _typing_then_opening(a, typing_evidence=[RequestCheck(method="POST", url=f"{a.origin}/api/book")])
+    orchestrator.planner.plan = AsyncMock(return_value=plan)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+
+    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    assert not result.success
+    orchestrator.planner.replan.assert_called_once()
+
+
 async def test_goal_without_evidence_is_marked_as_judged(sites, tmp_path):
     a, _ = sites
     goal = SubGoal(id=1, goal="Open checkout", success_criteria="Checkout is visible")

@@ -24,7 +24,14 @@ from web_lobster.core.values import ValueSpec, ValueType
 from web_lobster.mcp_server.agents import ServerUI, ValueRequestingPlanner
 from web_lobster.mcp_server.models import DataInput, MandateInput
 from web_lobster.mcp_server.server import build_server
-from web_lobster.mcp_server.service import MandateError, WebTaskService, build_mandate, sanitize
+from web_lobster.mandate.enforcer import Violation, ViolationKind
+from web_lobster.mcp_server.service import (
+    MandateError,
+    WebTaskService,
+    blocked_actions,
+    build_mandate,
+    sanitize,
+)
 from web_lobster.tools.mcp_manager import MCPManager
 
 SHOP = "https://www.united.com"
@@ -85,6 +92,19 @@ class TestMandateBuilding:
     def test_mandate_expires(self):
         mandate = build_mandate("t", MandateInput(origins=[SHOP], expires_in_minutes=5))
         assert mandate.expires_at is not None and not mandate.is_expired()
+
+    def test_blocked_requests_grouped_with_background_traffic_called_out(self):
+        violations = [
+            Violation(kind=ViolationKind.UNAPPROVED_WRITE, url=f"{SHOP}/ins/v2/events", detail="d", resource_type="ping")
+            for _ in range(11)
+        ] + [Violation(kind=ViolationKind.NAVIGATION, url="https://evil.example/x", detail="d", resource_type="document")]
+        blocked = blocked_actions(violations)
+        assert [(b.kind, b.site, b.count, b.background) for b in blocked] == [
+            ("unapproved_write", SHOP, 11, True),
+            ("navigation", "https://evil.example", 1, False),
+        ]
+        summary = WebTaskService._summary(True, False, [], blocked, None)
+        assert "blocked 12 request(s), 11 of them sent by the page's own scripts" in summary
 
     def test_sanitize_keeps_only_origins(self):
         text = f"Timeout at https://evil.example/{CANARY.replace(' ', '-')}?q=1\nretry"

@@ -81,7 +81,34 @@ class Violation(BaseModel):
     grant: Optional[str] = None
     # True when the browser blocked a top-level navigation, which leaves its error page
     main_frame: bool = False
+    # Chromium's type for a request the browser blocked: document, fetch, ping, ...
+    resource_type: str = ""
     timestamp: float = Field(default_factory=time.time)
+
+
+def sent_by_page_script(violation: Violation) -> bool:
+    """Whether a blocked request came from the page's own scripts (analytics, error
+    reporting, API calls) rather than a page load or form submission."""
+    return violation.resource_type not in ("", "document")
+
+
+# Kinds the executor needs to hear about even when a script sent the request: the
+# agent typed the data, or the whole task has to stop.
+_ALWAYS_REPORTED = frozenset({ViolationKind.DATA_LEAK, ViolationKind.EXPIRED})
+
+
+def worth_reporting(violation: Violation) -> bool:
+    """Whether to tell the executor about a block, i.e. whether its own action likely
+    caused it: a page load or form, a script call back to the site it's working on
+    (an app's submit button), or typed data about to leave. A page's own traffic to
+    third parties (python.org's error reporting retried 427 times in one task) is
+    still blocked and recorded, but the executor can't act on it.
+    """
+    if violation.main_frame or violation.kind in _ALWAYS_REPORTED:
+        return True
+    if violation.kind is ViolationKind.UNAPPROVED_WRITE:
+        return violation.resource_type in ("fetch", "xhr")
+    return not sent_by_page_script(violation)
 
 
 class MandateViolationError(RuntimeError):
@@ -305,7 +332,9 @@ class MandateEnforcer:
         if pending:
             self._pending.append(violation)
             self._pending_event.set()
-        logger.warning("mandate_violation", kind=violation.kind.value, detail=violation.detail)
+        log = logger.warning if worth_reporting(violation) else logger.info
+        log("mandate_violation", kind=violation.kind.value, detail=violation.detail,
+            resource_type=violation.resource_type or None)
 
     def drain(self) -> list[Violation]:
         """Violations raised inside the browser since the last drain."""
@@ -417,7 +446,8 @@ class MandateEnforcer:
             )
             if violation:
                 violation.main_frame = main_frame_navigation
-                self.record(violation, pending=True)
+                violation.resource_type = request.resource_type
+                self.record(violation, pending=worth_reporting(violation))
                 await route.abort("blockedbyclient")
             elif main_frame_navigation:
                 await self._navigate_checked(route, request)

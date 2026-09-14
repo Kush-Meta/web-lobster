@@ -31,6 +31,8 @@ class ModelConfig(BaseModel):
     timeout: float = 120.0
     grammar_path: Optional[str] = None  # GBNF grammar file for llama.cpp
     api_key: Optional[str] = None       # Anthropic API key (falls back to ANTHROPIC_API_KEY env var)
+    vision: bool = True                 # False for text-only models: never send them screenshots
+    context_window: Optional[int] = None  # Ollama num_ctx; None keeps Ollama's default, which can truncate prompts
 
 
 class BrowserConfig(BaseModel):

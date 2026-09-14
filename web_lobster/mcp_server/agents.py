@@ -76,8 +76,10 @@ class ValueRequestingPlanner:
         self._planner = planner
         self._specs = specs
 
-    async def plan(self, task: str, memory_context: Optional[str] = None) -> TaskPlan:
-        plan = await self._planner.plan(task, memory_context)
+    async def plan(
+        self, task: str, memory_context: Optional[str] = None, start_url: Optional[str] = None,
+    ) -> TaskPlan:
+        plan = await self._planner.plan(task, memory_context, start_url)
         if plan.sub_goals:
             plan.sub_goals[-1] = self._with_values(plan.sub_goals[-1])
         return plan

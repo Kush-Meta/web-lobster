@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -39,6 +40,15 @@ from web_lobster.verify.receipts import write_receipts
 from web_lobster.utils.logging import print_banner, set_log_level, get_logger
 
 logger = get_logger("cli")
+
+
+def _load_config(path: str | None) -> WebLobsterConfig:
+    """The config at path, used exactly as written. Without one, the default config,
+    which plans and acts with Claude when ANTHROPIC_API_KEY is set.
+    """
+    if path:
+        return WebLobsterConfig.from_yaml(path)
+    return WebLobsterConfig.default()
 
 
 @click.group(invoke_without_command=True)
@@ -99,8 +109,7 @@ def run(task, config, mandate, receipts, start_url, dry_run, headless, verbose, 
         raise click.UsageError("Provide a TASK or a --mandate file.")
     start_url = start_url or "https://www.google.com"
 
-    cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
-    cfg = cfg.upgrade_ollama_to_anthropic()
+    cfg = _load_config(config)
     if dry_run:
         cfg.safety.dry_run = True
     if headless:
@@ -140,7 +149,7 @@ def ui(host, port, config):
         python -m web_lobster ui -c configs/lightweight.yaml
     """
     print_banner()
-    cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
+    cfg = _load_config(config)
 
     from web_lobster.ui.server import run_server
     logger.info("launching_dashboard", url=f"http://{host}:{port}")
@@ -196,8 +205,7 @@ def bench(mode, scenario_ids, defense_names, config, json_path, headed, verbose)
 
     cfg = None
     if mode == "live":
-        cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
-        cfg = cfg.upgrade_ollama_to_anthropic()
+        cfg = _load_config(config)
         click.echo(
             f"  Live mode: {len(scenarios) * len(defenses)} agent runs with your configured "
             "models. This makes real model calls.\n"
@@ -255,8 +263,10 @@ def mcp_command(config, transport, host, port, runs_dir, max_concurrent, approve
     from web_lobster.mcp_server.service import DEFAULT_RUNS_DIR, WebTaskService
 
     set_log_level("DEBUG" if verbose else "WARNING")
-    cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
-    cfg = cfg.upgrade_ollama_to_anthropic()
+    if not verbose:
+        # httpx logs every model call at INFO, which floods the host's server log.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+    cfg = _load_config(config)
     cfg.browser.headless = not headed
 
     service = WebTaskService(

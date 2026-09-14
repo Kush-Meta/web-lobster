@@ -111,6 +111,14 @@ class ReceiptSummary(BaseModel):
 class BlockedAction(BaseModel):
     kind: str = Field(description="navigation, cross_origin_write, unapproved_write, websocket, data_leak, ...")
     site: str = Field(description="Origin involved; paths are left out because sites control them.")
+    count: int = Field(default=1, description="How many times this was blocked.")
+    background: bool = Field(
+        default=False,
+        description=(
+            "Sent by the page's own scripts (analytics, error reporting, API calls) rather than "
+            "a page load or form submission."
+        ),
+    )
 
 
 class WebTaskResult(BaseModel):

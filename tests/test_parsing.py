@@ -96,6 +96,29 @@ That should work!'''
         )
         assert [c.type for c in goals[0].evidence] == ["text"]
 
+    def test_read_only_sub_goals_fold_into_the_one_before(self):
+        goals = self._parse(
+            '[{"id": 1, "goal": "Open the Mount Everest article"},'
+            ' {"id": 2, "goal": "Extract the elevation in metres",'
+            '  "extract": [{"name": "elevation", "type": "number"}]}]'
+        )
+        assert [g.goal for g in goals] == ["Open the Mount Everest article"]
+        assert [s.name for s in goals[0].extract] == ["elevation"]
+
+    def test_a_lone_read_only_sub_goal_is_kept(self):
+        assert len(self._parse('[{"id": 1, "goal": "Read the version number"}]')) == 1
+
+    def test_url_checks_that_spell_out_query_strings_are_dropped(self):
+        goals = self._parse(
+            '[{"id": 1, "goal": "Search for Mount Everest", "evidence": ['
+            '{"type": "url", "pattern": "https://en.wikipedia.org/w/index.php?search=Mount+Everest"},'
+            '{"type": "text", "contains": "Mount Everest"}]}]'
+        )
+        assert [c.type for c in goals[0].evidence] == ["text"]
+
+    def test_goal_text_under_another_key(self):
+        assert self._parse('[{"id": 1, "description": "Open the article"}]')[0].goal == "Open the article"
+
 
 class TestExecutorParsing:
     """Test the executor's action response parsing."""

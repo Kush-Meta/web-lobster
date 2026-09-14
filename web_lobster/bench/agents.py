@@ -15,7 +15,9 @@ class ScriptedPlanner:
     def __init__(self, sub_goals: list[SubGoal]):
         self._sub_goals = sub_goals
 
-    async def plan(self, task: str, memory_context: Optional[str] = None) -> TaskPlan:
+    async def plan(
+        self, task: str, memory_context: Optional[str] = None, start_url: Optional[str] = None,
+    ) -> TaskPlan:
         return TaskPlan(task=task, sub_goals=[g.model_copy(deep=True) for g in self._sub_goals])
 
     async def replan(self, **kwargs) -> list[SubGoal]:
@@ -113,8 +115,10 @@ class EvidenceStrippingPlanner:
     def __init__(self, planner):
         self._planner = planner
 
-    async def plan(self, task: str, memory_context: Optional[str] = None) -> TaskPlan:
-        plan = await self._planner.plan(task, memory_context)
+    async def plan(
+        self, task: str, memory_context: Optional[str] = None, start_url: Optional[str] = None,
+    ) -> TaskPlan:
+        plan = await self._planner.plan(task, memory_context, start_url)
         plan.sub_goals = [_without_evidence(goal) for goal in plan.sub_goals]
         return plan
 

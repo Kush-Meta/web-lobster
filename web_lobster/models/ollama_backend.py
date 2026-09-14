@@ -24,11 +24,16 @@ class OllamaBackend(ModelBackend):
         model: str = "qwen2.5:7b",
         base_url: str = "http://localhost:11434",
         timeout: float = 120.0,
+        context_window: Optional[int] = None,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Ollama silently truncates prompts longer than its context window.
+        self.context_window = context_window
         self._client: Optional[httpx.AsyncClient] = None
+        # Set once the model turns out to reject images; they're dropped from then on.
+        self._text_only = False
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -52,7 +57,7 @@ class OllamaBackend(ModelBackend):
             messages.append({"role": "system", "content": system})
 
         user_message: dict = {"role": "user", "content": prompt}
-        if images:
+        if images and not self._text_only:
             user_message["images"] = images  # Ollama expects base64 strings
         messages.append(user_message)
 
@@ -66,6 +71,9 @@ class OllamaBackend(ModelBackend):
             },
         }
 
+        if self.context_window:
+            payload["options"]["num_ctx"] = self.context_window
+
         logger.debug(
             "ollama_request",
             model=self.model,
@@ -77,7 +85,14 @@ class OllamaBackend(ModelBackend):
             f"{self.base_url}/api/chat",
             json=payload,
         )
-        response.raise_for_status()
+        if "images" in user_message and response.status_code == 400 and "multimodal" in response.text:
+            # A text-only model: remember that and send the prompt without images.
+            logger.warning("ollama_model_is_text_only", model=self.model)
+            self._text_only = True
+            user_message.pop("images")
+            response = await client.post(f"{self.base_url}/api/chat", json=payload)
+        if response.is_error:
+            raise RuntimeError(f"Ollama returned {response.status_code} for {self.model}: {response.text[:200]}")
         data = response.json()
 
         content = data.get("message", {}).get("content", "")

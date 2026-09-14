@@ -183,6 +183,33 @@ async def test_websocket_to_other_origin_is_closed(sites):
     assert b.requests == []
 
 
+async def test_page_text_can_read_just_the_main_content(sites):
+    a, _ = sites
+    controller, _ = await _start(_mandate(a), f"{a.origin}/article")
+    try:
+        main = await controller.page_text(main_only=True)
+        full = await controller.page_text()
+        limited = await controller.page_text(limit=20)
+    finally:
+        await controller.close()
+    assert main.strip() == "The tower is 330 metres tall."
+    assert full.startswith("Menu item") and "330 metres" in full
+    assert len(limited) == 20
+
+
+async def test_page_beacons_are_blocked_but_not_reported_to_the_executor(sites):
+    a, _ = sites
+    mandate = Mandate(task="test", origins=[a.origin], writes=[])
+    controller, enforcer = await _start(mandate, f"{a.origin}/beacon")
+    try:
+        assert await _wait_for(lambda: ViolationKind.UNAPPROVED_WRITE in _kinds(enforcer))
+        assert enforcer.violations[0].resource_type == "ping"
+        assert enforcer.drain() == []
+    finally:
+        await controller.close()
+    assert not a.saw("POST", "/api/analytics")
+
+
 @pytest.mark.parametrize("listed", [False, True])
 async def test_same_origin_write_needs_a_listed_rule(sites, listed):
     a, _ = sites
