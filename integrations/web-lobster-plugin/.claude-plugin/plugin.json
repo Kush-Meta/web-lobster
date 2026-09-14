@@ -1,0 +1,10 @@
+{
+  "name": "web-lobster",
+  "version": "0.2.0",
+  "description": "Web tasks in a real browser, confined to a mandate the browser enforces, with verified results and receipts.",
+  "author": {
+    "name": "Kush-Meta"
+  },
+  "homepage": "https://github.com/Kush-Meta/web-lobster",
+  "license": "MIT"
+}

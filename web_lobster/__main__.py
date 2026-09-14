@@ -4,6 +4,7 @@ Usage:
     python -m web_lobster run "Find the cheapest flight from LAX to JFK"
     python -m web_lobster run --mandate examples/mandate_flight_search.yaml
     python -m web_lobster bench
+    python -m web_lobster mcp
     python -m web_lobster ui
     python -m web_lobster ui --port 8080
     python -m web_lobster run --config my_config.yaml "Search for Python jobs"
@@ -217,6 +218,58 @@ def bench(mode, scenario_ids, defense_names, config, json_path, headed, verbose)
     if json_path:
         Path(json_path).write_text(report.model_dump_json(indent=2))
         click.echo(f"  Results written to {json_path}\n")
+
+
+@cli.command("mcp")
+@click.option("--config", "-c", type=click.Path(exists=True), help="Path to YAML config file")
+@click.option(
+    "--transport", type=click.Choice(["stdio", "streamable-http"]), default="stdio", show_default=True,
+)
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host for streamable HTTP")
+@click.option("--port", default=8765, type=int, show_default=True, help="Port for streamable HTTP")
+@click.option(
+    "--runs-dir", type=click.Path(file_okay=False), default=None,
+    help="Where run records and receipts are kept (default: ~/.web_lobster/runs)",
+)
+@click.option("--max-concurrent", default=1, type=int, show_default=True, help="Tasks run at once")
+@click.option(
+    "--approve-confirmations", is_flag=True,
+    help="Approve the safety gate's confirmation prompts instead of declining them",
+)
+@click.option("--headed", is_flag=True, help="Show the browser")
+@click.option("--verbose", "-v", is_flag=True, help="Debug logs (to stderr)")
+def mcp_command(config, transport, host, port, runs_dir, max_concurrent, approve_confirmations, headed, verbose):
+    """Serve web-lobster over MCP, so other agents can run web tasks under a mandate.
+
+    Tools: web_task, check_mandate, get_run, verify_receipts. Speaks stdio by
+    default; logs go to stderr because stdout carries the protocol. See
+    docs/mcp-server.md for setup with OpenClaw and Claude Code.
+
+    Examples:
+
+        web-lobster mcp
+
+        web-lobster mcp -c configs/claude.yaml --transport streamable-http --port 8765
+    """
+    from web_lobster.mcp_server.server import build_server
+    from web_lobster.mcp_server.service import DEFAULT_RUNS_DIR, WebTaskService
+
+    set_log_level("DEBUG" if verbose else "WARNING")
+    cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
+    cfg = cfg.upgrade_ollama_to_anthropic()
+    cfg.browser.headless = not headed
+
+    service = WebTaskService(
+        cfg,
+        runs_dir=Path(runs_dir) if runs_dir else DEFAULT_RUNS_DIR,
+        max_concurrent=max_concurrent,
+        approve_confirmations=approve_confirmations,
+    )
+    server = build_server(service)
+    if transport == "stdio":
+        server.run("stdio")
+    else:
+        server.run("streamable-http", host=host, port=port)
 
 
 def main():

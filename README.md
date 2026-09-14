@@ -83,6 +83,7 @@ python -m web_lobster --config configs/my_config.yaml "your task here"
 - **Planner isolation**: The planner never reads page content; pages reach it only as type-checked values
 - **Evidence and receipts**: Sub-goals are proven done by checks run in code, and every run leaves a chained receipt log
 - **Poisoned-page benchmark**: Scores the defenses on local trap sites, from what the sites' servers received
+- **MCP server**: Other agents (OpenClaw, Claude Code, any MCP client) run web tasks here under a mandate
 
 ## Mandates
 
@@ -196,6 +197,23 @@ The harmful effect that remains is a known gap, `allowed-write-abuse`: write rul
 
 `--scenario` and `--defenses` narrow a run (both repeatable), `--json FILE` writes every outcome, and `--headed` shows the browser.
 
+## Use it from other agents (MCP)
+
+`web-lobster mcp` serves web-lobster over MCP, so OpenClaw, Claude Code or any MCP client can hand it a web task and a mandate:
+
+```json
+{"task": "Rebook my trip for Dec 22",
+ "mandate": {"origins": ["https://www.united.com"],
+             "writes": ["POST https://www.united.com/api/rebook*"]},
+ "values": [{"name": "new_date", "type": "date"}]}
+```
+
+- **No mandate, no task.** Every `web_task` call carries a mandate, and a mandate with no `writes` is read-only.
+- **Results the caller can rely on.** `verified` means every completed step was proven by evidence checks. Page text (the answer and text values) is withheld unless the caller asks for it, so a web page can't prompt-inject the calling agent through web-lobster.
+- **Receipts outlive the call.** Each run's receipts are saved, and `verify_receipts` checks them against the chain head the caller kept.
+
+The tools are `web_task`, `check_mandate` (validates a mandate and returns text to show the user for approval), `get_run`, and `verify_receipts`. Setup for OpenClaw and Claude Code, the tool reference, and the trust model are in [docs/mcp-server.md](docs/mcp-server.md). The design record is [docs/design/step-5-mcp-server.md](docs/design/step-5-mcp-server.md), [docs/roadmap.md](docs/roadmap.md) tracks the project as a whole, and [integrations/web-lobster-plugin](integrations/web-lobster-plugin) is a bundle that works as both an OpenClaw plugin and a Claude Code plugin.
+
 ## Project Structure
 
 ```
@@ -235,6 +253,11 @@ web_lobster/
 │   ├── agents.py            # Scripted planner, executor and validator
 │   ├── runner.py            # Runs scenarios under each defense setup
 │   └── report.py            # Text summary of a benchmark run
+├── mcp_server/
+│   ├── models.py            # Tool request and result shapes
+│   ├── service.py           # Runs web tasks and keeps run records, independent of MCP
+│   ├── agents.py            # Progress and confirmation bridge, value requests
+│   └── server.py            # MCP tools over stdio or streamable HTTP
 ├── ui/
 │   ├── server.py            # FastAPI backend + WebSocket streaming
 │   ├── state.py             # Shared state bridge (orchestrator ↔ UI)

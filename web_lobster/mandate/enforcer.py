@@ -257,6 +257,17 @@ class MandateEnforcer:
         resolved = PLACEHOLDER_RE.sub(lambda m: self.mandate.grant(m.group(1)).value, text)
         return resolved, None
 
+    def approves_entry(self, text: str, page_url: str) -> bool:
+        """True when the text is only granted {{placeholders}} that this page may receive.
+
+        The mandate is the user's approval for exactly that entry, so a separate
+        confirmation isn't needed.
+        """
+        if not PLACEHOLDER_RE.search(text) or PLACEHOLDER_RE.sub("", text).strip():
+            return False
+        _, violation = self.resolve_text(text, page_url)
+        return violation is None
+
     def contains_grant(self, text: str) -> bool:
         folded = text.lower()
         return any(g.value.lower() in folded for g in self.mandate.data)

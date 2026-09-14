@@ -55,10 +55,12 @@ class MCPManager:
 
                 tools_result = await session.list_tools()
                 for tool in tools_result.tools:
+                    # mcp 2.x renamed Tool.inputSchema to input_schema.
+                    input_schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
                     schema = {
                         "name": tool.name,
                         "description": tool.description or "",
-                        "input_schema": tool.inputSchema if tool.inputSchema else {
+                        "input_schema": input_schema or {
                             "type": "object",
                             "properties": {},
                             "required": [],

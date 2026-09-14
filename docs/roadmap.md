@@ -1,0 +1,37 @@
+# web-lobster roadmap
+
+## Direction
+
+Personal agents like OpenClaw can now act on the web for their users, and agentic browsers are routinely hijacked by instructions planted in the pages they read. Making the model better at spotting those instructions doesn't close the problem, because attackers adapt. web-lobster takes the other route: make acting on a planted instruction impossible, and make every claimed result provable.
+
+The goal is a web agent you can hand a logged-in browser and a goal, knowing it can't be turned against you, with a record of exactly what it did. Other agents should be able to delegate web work to it on those terms.
+
+## Status
+
+| Step | What | Status | Commits |
+|---|---|---|---|
+| 1 | **Mandates.** Sites, data grants, and expiry, enforced in the browser's network layer; data typed as `{{placeholders}}` | Done | `55bc8ab` (with fix `afe735e`) |
+| 2 | **Planner isolation.** The planner never reads page content; pages reach it only as type-checked values | Done | `3e94026` |
+| 3 | **Evidence and receipts.** Sub-goals are proven done by checks run in code; every run leaves a hash-chained receipt log | Done | `0444f80` |
+| 4 | **Poisoned-page benchmark.** Trap sites, scored from what their servers received | Done | `fcacf12` |
+| 4b | **Write rules.** Mandates list the writes a task may make, closing the benchmark's same-site gap | Done | `eac51ac` |
+| 5 | **MCP server.** Other agents run web tasks under a mandate, with page text withheld from them by default ([design](design/step-5-mcp-server.md)) | Built | — |
+
+## Where things stand
+
+Scripted benchmark with a fully hijacked executor, all defenses on: 7/7 tasks done, 1/7 harmful effects, 0/7 leaks, 0/7 false "done". An honest executor completes every task under every defense setup.
+
+## Known gaps
+
+- **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules, for example a rebooking date that must match a typed value from the task.
+- **Live models.** Every result so far uses scripted models. The benchmark's live mode and the MCP server have never run against real models.
+- **Login.** Tasks start with a fresh browser profile, so signed-in tasks don't work.
+- **Dashboard.** The web dashboard doesn't accept mandates or show receipts.
+- **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.
+
+## Candidates after step 5
+
+1. Value-bound write rules, measured with the benchmark.
+2. A live-model benchmark run, to measure how often real models fall for each trap with and without defenses.
+3. Persistent, mandate-scoped browser profiles for signed-in tasks.
+4. Mandates and receipts in the dashboard.

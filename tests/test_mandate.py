@@ -227,6 +227,14 @@ class TestTextResolution:
         assert self.enforcer.contains_grant(EMAIL.upper())
         assert not self.enforcer.contains_grant("{{email}}")
 
+    def test_mandate_approves_only_pure_granted_entries(self):
+        assert self.enforcer.approves_entry("{{email}}", f"{SHOP}/signup")
+        assert self.enforcer.approves_entry(" {{ email }} ", f"{SHOP}/signup")
+        assert not self.enforcer.approves_entry("{{email}}", f"{EVIL}/signup")  # grant doesn't cover it
+        assert not self.enforcer.approves_entry("{{email}} and my password", f"{SHOP}/signup")
+        assert not self.enforcer.approves_entry(EMAIL, f"{SHOP}/signup")  # raw text isn't a grant
+        assert not self.enforcer.approves_entry("{{password}}", f"{SHOP}/signup")
+
 
 class TestActionChecks:
     def setup_method(self):

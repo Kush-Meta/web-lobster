@@ -474,7 +474,10 @@ class Orchestrator:
                     )
                     continue
 
-                if verdict.needs_confirmation:
+                if verdict.needs_confirmation and self._mandate_approves(action, observation.url):
+                    # The user already approved entering this data on this site, in the mandate.
+                    logger.info("confirmation_covered_by_mandate", reason=verdict.reason)
+                elif verdict.needs_confirmation:
                     logger.warning("action_needs_confirmation", reason=verdict.reason)
                     await self._ui_emit("on_safety_flag", action, verdict.reason)
                     confirmed = await self._request_confirmation(action, verdict.reason)
@@ -542,6 +545,12 @@ class Orchestrator:
                 return True
 
         return False
+
+    def _mandate_approves(self, action: Action, page_url: str) -> bool:
+        """Whether the mandate already approved this action: typing only granted data where allowed."""
+        if not self.enforcer or action.action != ActionType.TYPE or not action.text:
+            return False
+        return self.enforcer.approves_entry(action.text, page_url)
 
     def _violations(self) -> list[Violation]:
         return list(self.enforcer.violations) if self.enforcer else []

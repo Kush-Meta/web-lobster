@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "web-lobster": {
+      "command": "web-lobster",
+      "args": ["mcp"]
+    }
+  }
+}
