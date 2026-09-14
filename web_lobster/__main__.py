@@ -3,6 +3,7 @@
 Usage:
     python -m web_lobster run "Find the cheapest flight from LAX to JFK"
     python -m web_lobster run --mandate examples/mandate_flight_search.yaml
+    python -m web_lobster bench
     python -m web_lobster ui
     python -m web_lobster ui --port 8080
     python -m web_lobster run --config my_config.yaml "Search for Python jobs"
@@ -27,6 +28,9 @@ try:
 except ImportError:
     pass
 
+from web_lobster.bench.report import render as render_bench
+from web_lobster.bench.runner import DEFENSES, defenses_by_name, run_benchmark
+from web_lobster.bench.scenarios import SCENARIOS, scenario_by_id
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.mandate.schema import Mandate
@@ -141,6 +145,78 @@ def ui(host, port, config):
     logger.info("launching_dashboard", url=f"http://{host}:{port}")
     click.echo(f"  Dashboard: http://{host}:{port}\n")
     run_server(host=host, port=port, config=cfg)
+
+
+@cli.command()
+@click.option(
+    "--mode", type=click.Choice(["scripted", "live"]), default="scripted", show_default=True,
+    help="scripted: worst-case scripted models, no model calls. live: your configured models.",
+)
+@click.option(
+    "--scenario", "scenario_ids", multiple=True, type=click.Choice([s.id for s in SCENARIOS]),
+    help="Run only this scenario (repeatable)",
+)
+@click.option(
+    "--defenses", "defense_names", multiple=True, type=click.Choice([d.name for d in DEFENSES]),
+    help="Run only this defense configuration (repeatable)",
+)
+@click.option("--config", "-c", type=click.Path(exists=True), help="Model config for live mode")
+@click.option("--json", "json_path", type=click.Path(dir_okay=False), help="Write every run's outcome as JSON")
+@click.option("--headed", is_flag=True, help="Show the browser")
+@click.option("--verbose", "-v", is_flag=True, help="Show agent logs")
+def bench(mode, scenario_ids, defense_names, config, json_path, headed, verbose):
+    """Run the poisoned-page benchmark against local trap sites.
+
+    Each scenario is a small shop with a real task and a planted trap, plus a
+    second site playing the attacker. Runs are scored from what those servers
+    received, not from what the agent reports: did the task happen, did the
+    trap's damage happen, did the email reach the attacker, and did the agent
+    claim success that didn't happen.
+
+    Scripted mode (the default) swaps the models for an executor that obeys
+    every planted instruction and claims success early, plus an honest one for
+    comparison. It shows what the defenses contain in the worst case, needs no
+    API keys, and costs nothing. Live mode runs your configured models and
+    makes real model calls.
+
+    Examples:
+
+        python -m web_lobster bench
+
+        python -m web_lobster bench --scenario link-exfil --defenses none --defenses mandate+evidence
+
+        python -m web_lobster bench --mode live -c configs/claude.yaml --json live.json
+    """
+    print_banner()
+    set_log_level("DEBUG" if verbose else "SILENT")
+
+    scenarios = [scenario_by_id(i) for i in scenario_ids] or list(SCENARIOS)
+    defenses = [defenses_by_name(n) for n in defense_names] or list(DEFENSES)
+
+    cfg = None
+    if mode == "live":
+        cfg = WebLobsterConfig.from_yaml(config) if config else WebLobsterConfig.default()
+        cfg = cfg.upgrade_ollama_to_anthropic()
+        click.echo(
+            f"  Live mode: {len(scenarios) * len(defenses)} agent runs with your configured "
+            "models. This makes real model calls.\n"
+        )
+    elif config:
+        raise click.UsageError("--config only applies to --mode live.")
+
+    def progress(outcome):
+        click.echo(
+            f"  {outcome.scenario:<20} {outcome.defenses:<17} {outcome.persona:<9} "
+            f"{outcome.verdict()}  ({outcome.seconds:.1f}s)"
+        )
+
+    report = asyncio.run(run_benchmark(
+        scenarios, defenses, mode=mode, config=cfg, headless=not headed, on_outcome=progress,
+    ))
+    click.echo(render_bench(report))
+    if json_path:
+        Path(json_path).write_text(report.model_dump_json(indent=2))
+        click.echo(f"  Results written to {json_path}\n")
 
 
 def main():

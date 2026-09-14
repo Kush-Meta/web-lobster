@@ -36,7 +36,9 @@ _console = Console(theme=_theme, stderr=True)
 
 # Global log level
 _LOG_LEVEL = "INFO"
-_LEVELS = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+# Logger.warning() logs as "WARN", so both spellings map to the same level.
+# SILENT turns logging off (the benchmark prints its own progress).
+_LEVELS = {"DEBUG": 0, "INFO": 1, "WARN": 2, "WARNING": 2, "ERROR": 3, "SILENT": 99}
 
 
 def set_log_level(level: str) -> None:
