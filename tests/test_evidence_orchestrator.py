@@ -152,41 +152,70 @@ async def test_goal_that_acts_on_the_page_still_runs_when_its_url_already_matche
     orchestrator.executor.decide.assert_called()
 
 
-def _typing_then_opening(a, typing_evidence=()) -> TaskPlan:
+def _search_then_open(a, search_evidence=()) -> TaskPlan:
     return TaskPlan(task="Open checkout", sub_goals=[
-        SubGoal(id=1, goal="Type the order number into the search box",
-                success_criteria="The search box holds the order number", evidence=list(typing_evidence)),
-        SubGoal(id=2, goal="Open the checkout page", success_criteria="Checkout is visible",
+        SubGoal(id=1, goal="Search for checkout", success_criteria="The search box holds 'checkout'",
+                evidence=list(search_evidence)),
+        SubGoal(id=2, goal="Click the checkout result", success_criteria="Checkout is visible",
                 evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")]),
     ])
 
 
-async def test_failed_step_is_skipped_when_the_browser_is_already_at_a_later_one(sites, tmp_path):
-    a, _ = sites
-    orchestrator, _ = _orchestrator(tmp_path, SubGoal(id=1, goal="unused", success_criteria="unused"))
-    orchestrator.planner.plan = AsyncMock(return_value=_typing_then_opening(a))
+def _clicks_link_then_claims_done(calls: list[dict]):
+    async def decide(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return Action(action=ActionType.CLICK, element_id=element_id(kwargs["observation"], "Go to checkout"))
+        return Action(action=ActionType.DONE, reason="done")
+    return decide
+
+
+def _plan_run(tmp_path, plan: TaskPlan) -> Orchestrator:
+    orchestrator, _ = _orchestrator(tmp_path, plan.sub_goals[0])
+    orchestrator.planner.plan = AsyncMock(return_value=plan)
     orchestrator.validator.validate = AsyncMock(
-        return_value=ValidationResult(achieved=False, confidence=0.9, observation="box is empty")
+        return_value=ValidationResult(achieved=False, confidence=0.9, observation="the box is empty")
     )
+    return orchestrator
+
+
+async def test_failed_step_that_reached_a_later_one_is_skipped(sites, tmp_path):
+    a, _ = sites
+    orchestrator = _plan_run(tmp_path, _search_then_open(a))
+    calls: list[dict] = []
+    orchestrator.executor.decide = AsyncMock(side_effect=_clicks_link_then_claims_done(calls))
+
+    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/links")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    orchestrator.planner.replan.assert_not_called()
+    assert {call["sub_goal"].id for call in calls} == {1}  # step 2 was proven without acting
+    assert [g.status.value for g in result.plan.sub_goals] == ["skipped", "completed"]
+    assert [(r.sub_goal_id, r.achieved, r.basis) for r in result.receipts] == [
+        (1, False, "model"), (2, True, "evidence"),
+    ]
+
+
+async def test_no_skip_to_a_page_the_browser_was_already_on(sites, tmp_path):
+    a, _ = sites
+    orchestrator = _plan_run(tmp_path, _search_then_open(a))
     orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
 
     result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/checkout")
     _skip_without_chromium(result)
 
-    assert result.success, result.error
-    orchestrator.planner.replan.assert_not_called()
-    assert [g.status.value for g in result.plan.sub_goals] == ["skipped", "completed"]
-    assert [(r.sub_goal_id, r.achieved) for r in result.receipts] == [(1, False), (2, True)]
+    assert not result.success
+    orchestrator.planner.replan.assert_called_once()
 
 
 async def test_never_skips_past_a_step_that_had_to_send_a_write(sites, tmp_path):
     a, _ = sites
-    orchestrator, _ = _orchestrator(tmp_path, SubGoal(id=1, goal="unused", success_criteria="unused"))
-    plan = _typing_then_opening(a, typing_evidence=[RequestCheck(method="POST", url=f"{a.origin}/api/book")])
-    orchestrator.planner.plan = AsyncMock(return_value=plan)
-    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+    plan = _search_then_open(a, search_evidence=[RequestCheck(method="POST", url=f"{a.origin}/api/book")])
+    orchestrator = _plan_run(tmp_path, plan)
+    orchestrator.executor.decide = AsyncMock(side_effect=_clicks_link_then_claims_done([]))
 
-    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/checkout")
+    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/links")
     _skip_without_chromium(result)
 
     assert not result.success

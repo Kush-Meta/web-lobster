@@ -128,6 +128,9 @@ class Orchestrator:
         self.receipts = ReceiptLog()
         self._last_receipt: Optional[Receipt] = None
         self._goal_network_start = 0
+        self._goal_start_url = ""
+        # A later sub-goal the browser reached while an earlier one failed
+        self._proven_by_skip: Optional[SubGoal] = None
 
         # Initialize browser and safety
         self.browser = BrowserController(config.browser, enforcer=self.enforcer)
@@ -371,6 +374,7 @@ class Orchestrator:
         goal_view = self._render_goal(sub_goal)
         self._goal_violations_start = len(self.enforcer.violations) if self.enforcer else 0
         self._goal_network_start = self.browser.network.mark()
+        self._goal_start_url = self.browser.current_url
         self._last_receipt = None
         self.safety.reset_counter()
         self.stuck_detector.reset()
@@ -378,7 +382,8 @@ class Orchestrator:
         # so the model never loses the diagnostic history of this sub-goal.
         reflections: list[str] = []
 
-        if await self._already_there(sub_goal) and await self._verify(
+        proven, self._proven_by_skip = self._proven_by_skip is sub_goal, None
+        if (proven or await self._already_there(sub_goal)) and await self._verify(
             sub_goal, goal_view, self.state.current_observation
         ):
             logger.info("subgoal_already_met", id=sub_goal.id)
@@ -579,15 +584,21 @@ class Orchestrator:
         """Whether a sub-goal that only opens a page is already met, before any action.
 
         Plans often start with "Open the downloads page" when the browser starts
-        there, and the executor then clicks around a page it should stay on. This
-        applies only to goals that open a page, with a url check pinning the page
-        and no request check (a write has to happen during the sub-goal).
+        there, and the executor then clicks around a page it should stay on. Only
+        goals that open a page qualify: "Book the trip" can share its url check with
+        the page the booking starts from.
+        """
+        return bool(_NAVIGATION_GOAL.match(sub_goal.goal)) and await self._page_proves(sub_goal)
+
+    async def _page_proves(self, sub_goal: SubGoal) -> bool:
+        """Whether the live browser already meets a sub-goal's evidence.
+
+        Only evidence pinned to a page by a url check counts, and never a request
+        check: a write has to happen during its sub-goal.
         """
         checks = sub_goal.evidence
-        if (
-            not _NAVIGATION_GOAL.match(sub_goal.goal)
-            or not any(check.type == "url" for check in checks)
-            or any(check.type == "request" for check in checks)
+        if not any(check.type == "url" for check in checks) or any(
+            check.type == "request" for check in checks
         ):
             return False
         context = EvidenceContext(
@@ -599,26 +610,35 @@ class Orchestrator:
         return all(evaluate(check, context).passed for check in checks)
 
     async def _skip_to_later_goal(self, plan: TaskPlan, failed: SubGoal) -> bool:
-        """After a sub-goal fails, jump ahead if the browser is provably at a later one.
+        """After a sub-goal fails, jump ahead if its actions reached a later one.
 
-        Small planners split one search into "type the query" and "open the result".
-        Typing and pressing Enter lands on the result, and the typing step then fails
-        its own check. When a later open-a-page sub-goal is already met, the steps
-        before it are skipped instead of replanned. Never across a sub-goal with a
-        request check: skipped sub-goals count toward completion, and a write it
-        required would never have been proven.
+        Small planners split one search into "type the query", "click search" and
+        "open the result". Typing and pressing Enter lands on the result, and the
+        typing step then fails its own check. When the failed step took the browser
+        to a page that proves a later sub-goal, the steps before that one are
+        skipped instead of replanned. Never across a sub-goal with a request check:
+        skipped sub-goals count toward completion, and a write it required would
+        never have been proven.
         """
         pending = [goal for goal in plan.sub_goals if goal.status == SubGoalStatus.PENDING]
         for index, later in enumerate(pending):
             skipped = [failed, *pending[:index]]
             if any(check.type == "request" for goal in skipped for check in goal.evidence):
                 return False
-            if await self._already_there(later):
-                for goal in skipped:
-                    goal.status = SubGoalStatus.SKIPPED
-                logger.info("subgoals_superseded", failed=failed.id, resume_at=later.id)
-                return True
+            if self._matched_at_goal_start(later) or not await self._page_proves(later):
+                continue
+            for goal in skipped:
+                goal.status = SubGoalStatus.SKIPPED
+            self._proven_by_skip = later
+            logger.info("subgoals_superseded", failed=failed.id, resume_at=later.id)
+            return True
         return False
+
+    def _matched_at_goal_start(self, sub_goal: SubGoal) -> bool:
+        """Whether the browser was already on a sub-goal's page when the current one began."""
+        context = EvidenceContext(page_url=self._goal_start_url, page_text="", events=[], values={})
+        url_checks = [check for check in sub_goal.evidence if check.type == "url"]
+        return all(evaluate(check, context).passed for check in url_checks)
 
     def _mandate_approves(self, action: Action, page_url: str) -> bool:
         """Whether the mandate already approved this action: typing only granted data where allowed."""

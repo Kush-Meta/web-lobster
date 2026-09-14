@@ -46,6 +46,7 @@ def build_sites() -> tuple[Site, Site]:
         ),
         "/api/book": (303, {"Location": "/confirmation/ABC123"}, ""),
         "/confirmation/ABC123": html("<h1>Booking confirmed</h1><p>Reference ABC123</p>"),
+        "/links": html('<a href="/checkout">Go to checkout</a>'),
         "/fake-success": html("<h1>Booking confirmed</h1><p>Nothing was actually booked.</p>"),
         "/beacon": html('<p>Reading</p><script>navigator.sendBeacon("/api/analytics", "event")</script>'),
         "/article": html("<nav>" + "Menu item " * 300 + "</nav><main><p>The tower is 330 metres tall.</p></main>"),
