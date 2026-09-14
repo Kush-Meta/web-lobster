@@ -9,6 +9,9 @@ A mandate declares:
 - data:       user values the agent may enter, and the origins each may reach.
               The executor refers to them as {{name}} placeholders, so the
               model never sees the raw value.
+- writes:     optional list of the state-changing requests the task may make on
+              those origins, as "METHOD URL-pattern". Leave it out to allow any
+              write to an allowed origin; an empty list makes the task read-only.
 - expires_at: after this time nothing is allowed.
 
 Origin patterns look like "https://www.united.com", "united.com" (https is
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import re
 import time
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
@@ -87,6 +91,63 @@ def _parse_patterns(patterns: list[str]) -> list[Origin]:
     return [parse_origin_pattern(p) for p in patterns]
 
 
+def parse_url_pattern(pattern: str) -> tuple[Origin, str]:
+    """Split "https://www.united.com/confirmation/*" into an origin and a path glob.
+
+    The origin follows the origin-pattern rules (at most a leading "*." label),
+    so a pattern can't match a lookalike host. In the path, "*" matches
+    anything, including "/" and the query string. No path means any path.
+    """
+    if "://" not in pattern:
+        raise ValueError(f"URL pattern needs a scheme: {pattern!r}")
+    scheme, rest = pattern.split("://", 1)
+    host, slash, path = rest.partition("/")
+    origin = parse_origin_pattern(f"{scheme}://{host}")
+    return origin, ("/" + path) if slash else "*"
+
+
+def url_matches(url: str, pattern: str) -> bool:
+    origin_pattern, path_glob = parse_url_pattern(pattern)
+    origin = url_origin(url)
+    if origin is None or not origin_matches(origin, origin_pattern):
+        return False
+    parts = urlsplit(url)
+    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    return fnmatchcase(target, path_glob)
+
+
+# WS covers WebSocket connections; * covers any write method, WebSockets included.
+WRITE_RULE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE", "WS", "*"})
+
+
+class WriteRule(BaseModel):
+    """A state-changing request the task may make: a method and a URL pattern."""
+    method: str
+    url: str
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def _check_method(cls, v: object) -> str:
+        method = str(v).strip().upper()
+        if method not in WRITE_RULE_METHODS:
+            raise ValueError(
+                f"write rule method must be one of {sorted(WRITE_RULE_METHODS)}: {v!r}"
+            )
+        return method
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str) -> str:
+        parse_url_pattern(v)
+        return v
+
+    def matches(self, method: str, url: str) -> bool:
+        return self.method in ("*", method.upper()) and url_matches(url, self.url)
+
+    def __str__(self) -> str:
+        return f"{self.method} {self.url}"
+
+
 class DataGrant(BaseModel):
     """A user value the agent may enter, and the origins allowed to receive it."""
     name: str
@@ -131,6 +192,8 @@ class Mandate(BaseModel):
     task: str
     origins: list[str] = Field(min_length=1)
     data: list[DataGrant] = Field(default_factory=list)
+    # None allows any write to an allowed origin; [] makes the task read-only.
+    writes: Optional[list[WriteRule]] = None
     expires_at: Optional[float] = None  # unix seconds; None = no expiry
 
     _patterns: list[Origin] = PrivateAttr(default_factory=list)
@@ -140,6 +203,20 @@ class Mandate(BaseModel):
     def _check_origins(cls, v: list[str]) -> list[str]:
         _parse_patterns(v)
         return v
+
+    @field_validator("writes", mode="before")
+    @classmethod
+    def _parse_write_strings(cls, v: object) -> object:
+        """Accept "POST https://…" strings as well as {method, url} objects."""
+        if not isinstance(v, list):
+            return v
+        rules = []
+        for item in v:
+            if isinstance(item, str):
+                method, _, url = item.strip().partition(" ")
+                item = {"method": method, "url": url.strip()}
+            rules.append(item)
+        return rules
 
     @model_validator(mode="after")
     def _check_unique_grants(self) -> Mandate:
@@ -155,6 +232,10 @@ class Mandate(BaseModel):
     def allows_origin(self, url: str) -> bool:
         origin = url_origin(url)
         return origin is not None and any(origin_matches(origin, p) for p in self._patterns)
+
+    def allows_write(self, method: str, url: str) -> bool:
+        """Whether a write (or "WS" connection) to this URL is listed. No list allows all."""
+        return self.writes is None or any(rule.matches(method, url) for rule in self.writes)
 
     def grant(self, name: str) -> Optional[DataGrant]:
         return next((g for g in self.data if g.name == name), None)

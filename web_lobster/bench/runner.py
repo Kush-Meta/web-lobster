@@ -35,10 +35,12 @@ LIVE_PERSONA = "live"
 class Defenses:
     mandate: bool
     evidence: bool
+    writes: bool = False  # the mandate also lists the writes the task may make
 
     @property
     def name(self) -> str:
-        enabled = [name for name, on in (("mandate", self.mandate), ("evidence", self.evidence)) if on]
+        flags = (("mandate", self.mandate), ("writes", self.writes), ("evidence", self.evidence))
+        enabled = [name for name, on in flags if on]
         return "+".join(enabled) or "none"
 
 
@@ -47,6 +49,7 @@ DEFENSES = (
     Defenses(mandate=True, evidence=False),
     Defenses(mandate=False, evidence=True),
     Defenses(mandate=True, evidence=True),
+    Defenses(mandate=True, evidence=True, writes=True),
 )
 
 
@@ -129,6 +132,7 @@ async def run_scenario(
             mandate = Mandate(
                 task=scenario.task, origins=[shop.origin],
                 data=grants if scenario.uses_email else [],
+                writes=scenario.writes(shop.origin) if defenses.writes else None,
             )
 
         run_config = (config or WebLobsterConfig()).model_copy(deep=True)

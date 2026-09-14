@@ -285,3 +285,65 @@ class TestPendingViolations:
         enforcer = MandateEnforcer(_mandate())
         await enforcer.wait_for_pending(timeout=0.05)
         assert enforcer.drain() == []
+
+
+class TestWriteRules:
+    def test_rules_parse_from_strings_and_objects(self):
+        m = _mandate(writes=[
+            "post https://www.united.com/api/rebook*",
+            {"method": "DELETE", "url": "https://www.united.com/api/cart/*"},
+        ])
+        assert [str(rule) for rule in m.writes] == [
+            "POST https://www.united.com/api/rebook*",
+            "DELETE https://www.united.com/api/cart/*",
+        ]
+
+    @pytest.mark.parametrize("rule", [
+        "GET https://www.united.com/",
+        "POST www.united.com/api",
+        "POST https://*united.com/api",
+        "POST",
+    ])
+    def test_invalid_rules_rejected(self, rule):
+        with pytest.raises(ValidationError):
+            _mandate(writes=[rule])
+
+    def test_no_list_allows_any_write_and_empty_list_is_read_only(self):
+        assert _mandate().allows_write("POST", f"{SHOP}/api/anything")
+        assert not _mandate(writes=[]).allows_write("POST", f"{SHOP}/api/anything")
+
+    def test_unlisted_same_origin_write_blocked(self):
+        enforcer = MandateEnforcer(_mandate(writes=[f"POST {SHOP}/api/rebook*"]))
+        assert enforcer.check_request(f"{SHOP}/api/rebook?date=2026-12-22", "POST") is None
+
+        v = enforcer.check_request(f"{SHOP}/api/card/delete", "POST", True)
+        assert v.kind == ViolationKind.UNAPPROVED_WRITE
+        assert "/api/card/delete" in v.detail
+
+        # Reads are unaffected, and other origins still get the cross-origin rule.
+        assert enforcer.check_request(f"{SHOP}/api/card/delete", "GET") is None
+        assert enforcer.check_request(f"{EVIL}/api/rebook", "POST").kind == ViolationKind.CROSS_ORIGIN_WRITE
+
+    def test_method_must_match_unless_wildcard(self):
+        enforcer = MandateEnforcer(_mandate(writes=[f"POST {SHOP}/api/cart/*"]))
+        assert enforcer.check_request(f"{SHOP}/api/cart/1", "DELETE").kind == ViolationKind.UNAPPROVED_WRITE
+        enforcer = MandateEnforcer(_mandate(writes=[f"* {SHOP}/api/cart/*"]))
+        assert enforcer.check_request(f"{SHOP}/api/cart/1", "DELETE") is None
+
+    def test_websockets_need_a_rule_once_writes_are_listed(self):
+        enforcer = MandateEnforcer(_mandate(writes=[f"WS {SHOP}/live"]))
+        assert enforcer.check_websocket("wss://www.united.com/live") is None
+        assert enforcer.check_websocket("wss://www.united.com/chat").kind == ViolationKind.UNAPPROVED_WRITE
+        assert MandateEnforcer(_mandate()).check_websocket("wss://www.united.com/chat") is None
+
+    def test_from_yaml(self, tmp_path):
+        path = tmp_path / "mandate.yaml"
+        path.write_text(
+            "task: Rebook my trip\n"
+            "origins: [https://www.united.com]\n"
+            "writes:\n"
+            "  - POST https://www.united.com/api/rebook*\n"
+        )
+        assert [str(rule) for rule in Mandate.from_yaml(path).writes] == [
+            "POST https://www.united.com/api/rebook*",
+        ]

@@ -181,3 +181,21 @@ async def test_websocket_to_other_origin_is_closed(sites):
     finally:
         await controller.close()
     assert b.requests == []
+
+
+@pytest.mark.parametrize("listed", [False, True])
+async def test_same_origin_write_needs_a_listed_rule(sites, listed):
+    a, _ = sites
+    rule = f"POST {a.origin}/api/book" if listed else f"POST {a.origin}/api/other"
+    mandate = Mandate(task="test", origins=[a.origin], writes=[rule])
+    controller, enforcer = await _start(mandate, f"{a.origin}/checkout")
+    try:
+        button = await _element_id(controller, "Book now")
+        await controller.execute(Action(action=ActionType.CLICK, element_id=button))
+        if listed:
+            await controller._page.wait_for_url(f"{a.origin}/confirmation/*", timeout=5000)
+        else:
+            assert await _wait_for(lambda: ViolationKind.UNAPPROVED_WRITE in _kinds(enforcer))
+    finally:
+        await controller.close()
+    assert (("POST", "/api/book", b"") in a.requests) is listed

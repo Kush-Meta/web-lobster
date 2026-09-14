@@ -16,14 +16,12 @@ import json
 import operator
 import re
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from typing import Annotated, Literal, Union
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from web_lobster.core.values import ExtractedValue, Scalar
-from web_lobster.mandate.schema import Origin, origin_matches, parse_origin_pattern, url_origin
+from web_lobster.mandate.schema import parse_url_pattern, url_matches
 from web_lobster.verify.network import WRITE_METHODS, NetworkEvent
 
 HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"}) | WRITE_METHODS
@@ -33,31 +31,6 @@ _OPS = {
     "<": operator.lt, "<=": operator.le,
     ">": operator.gt, ">=": operator.ge,
 }
-
-
-def parse_url_pattern(pattern: str) -> tuple[Origin, str]:
-    """Split "https://www.united.com/confirmation/*" into an origin and a path glob.
-
-    The origin follows mandate rules (at most a leading "*." label), so a
-    pattern can't match a lookalike host. In the path, "*" matches anything,
-    including "/" and the query string. No path means any path.
-    """
-    if "://" not in pattern:
-        raise ValueError(f"URL pattern needs a scheme: {pattern!r}")
-    scheme, rest = pattern.split("://", 1)
-    host, slash, path = rest.partition("/")
-    origin = parse_origin_pattern(f"{scheme}://{host}")
-    return origin, ("/" + path) if slash else "*"
-
-
-def url_matches(url: str, pattern: str) -> bool:
-    origin_pattern, path_glob = parse_url_pattern(pattern)
-    origin = url_origin(url)
-    if origin is None or not origin_matches(origin, origin_pattern):
-        return False
-    parts = urlsplit(url)
-    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-    return fnmatchcase(target, path_glob)
 
 
 class UrlCheck(BaseModel):

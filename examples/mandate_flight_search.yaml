@@ -23,4 +23,11 @@ origins:
 #     origins:
 #       - https://www.google.com
 
+# The state-changing requests the task may make on those sites, as
+# "METHOD URL-pattern" (METHOD is POST, PUT, PATCH, DELETE, WS, or *). Leave
+# this out to allow any write to an allowed site; an empty list makes the task
+# read-only. A search needs none; a booking task might list:
+# writes:
+#   - POST https://www.united.com/api/bookings*
+
 expires_in_minutes: 30

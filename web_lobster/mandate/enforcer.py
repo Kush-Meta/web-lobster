@@ -8,6 +8,8 @@ whatever the model intended:
 - main-frame navigations outside the mandate's origins, including every
   redirect hop
 - writes (POST/PUT/PATCH/DELETE) and WebSockets to origins outside the mandate
+- writes and WebSockets to an allowed origin that the mandate's write rules
+  don't list, when it lists any
 - requests and WebSocket messages carrying a granted value (raw, URL-encoded,
   JSON-escaped or base64) to an origin that grant doesn't cover
 - typing a granted value, or its {{placeholder}}, on a page the grant doesn't cover
@@ -34,7 +36,7 @@ import re
 import time
 from enum import Enum
 from typing import Optional, Union
-from urllib.parse import quote, unquote_plus, urljoin
+from urllib.parse import quote, unquote_plus, urljoin, urlsplit
 
 from playwright.async_api import BrowserContext, Request, Route, WebSocketRoute
 from pydantic import BaseModel, Field
@@ -62,6 +64,7 @@ BOUNCE_WINDOW_SECONDS = 10.0
 class ViolationKind(str, Enum):
     NAVIGATION = "navigation"
     CROSS_ORIGIN_WRITE = "cross_origin_write"
+    UNAPPROVED_WRITE = "unapproved_write"
     WEBSOCKET = "websocket"
     DATA_LEAK = "data_leak"
     DATA_ENTRY = "data_entry"
@@ -170,6 +173,12 @@ class MandateEnforcer:
             return None
 
         if self.mandate.allows_origin(url):
+            if method not in SAFE_METHODS and not self.mandate.allows_write(method, url):
+                return self._violation(
+                    ViolationKind.UNAPPROVED_WRITE, url,
+                    f"{method} {_origin_label(url)}{urlsplit(url).path} isn't one of the "
+                    "writes this mandate allows", method,
+                )
             return None
         if main_frame_navigation:
             return self._violation(
@@ -193,6 +202,12 @@ class MandateEnforcer:
                 f"WebSocket URL carries {_placeholder(leaked.name)}", grant=leaked.name,
             )
         if self.mandate.allows_origin(url):
+            if not self.mandate.allows_write("WS", url):
+                return self._violation(
+                    ViolationKind.UNAPPROVED_WRITE, url,
+                    f"WebSocket to {_origin_label(url)}{urlsplit(url).path} isn't one of the "
+                    "writes this mandate allows",
+                )
             return None
         return self._violation(
             ViolationKind.WEBSOCKET, url,
