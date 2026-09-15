@@ -153,6 +153,18 @@ tasks:
 
 Every task runs under every config you pass. The report shows how often each was done, right, and verified, with median steps and time. Runs take the same path as an MCP call and never stop to ask questions, and they start from empty memory unless you pass `--memory shared`. [trials/web.yaml](trials/web.yaml) has three read-only tasks to start from.
 
+## What we've learned so far
+
+Building web-lobster and running it against real sites taught us more than the tests did. The full account, with the evidence behind each lesson, is in [docs/learnings.md](docs/learnings.md). The headlines:
+
+- **Enforce, don't detect.** With a fully hijacked executor, harm fell from 6 of 7 scenarios to 1 and leaks from 3 to 0 once the browser enforced mandates, while an honest executor still finished every task. Each layer catches something different: mandates stop leaks, write rules stop same-site damage, and evidence stops false "done".
+- **Live runs find what tests don't.** Sixteen problems surfaced only on real sites or real models, from a model rejecting screenshots to a local config quietly switching to paid Claude models.
+- **"Verified" means exactly what was checked.** Runs proved every step and still returned 300 m for a 330 m tower, and "3.15" for Python 3.14.7. Values now carry shape checks enforced in code, and a run that can't read a requested value isn't verified.
+- **On small models, prompts don't stick; code does.** A 7B planner ignored instructions about guessed URLs, extract steps, and click-by-click plans. Normalizing its plans in code took Mount Everest from failing most runs to 3 of 3, in a median of 9 steps.
+- **One run is an anecdote.** The same task and code swung from 3 of 3 to 1 of 3 in a day, and python.org took anywhere from 85 to 277 seconds. `web-lobster trials` exists because of it.
+- **A stronger planner helps multi-step tasks, and costs time.** A 14B planner found Everest 3 of 3 times, fully verified, against 1 of 3 for the 7B baseline, but doubled the time on simple lookups and didn't help a weaker model read values.
+- **The planner stays blind to pages, even with more context.** Every new planner input passes one test: has it ever been near a page?
+
 ## More features
 
 - **Hybrid perception**: annotated screenshots plus accessibility-tree extraction, or DOM-only mode for text models

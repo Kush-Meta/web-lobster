@@ -1,6 +1,6 @@
 # web-lobster roadmap
 
-How the pieces fit together today: [architecture.md](architecture.md).
+How the pieces fit together today: [architecture.md](architecture.md). What building and testing it has taught us: [learnings.md](learnings.md).
 
 ## Direction
 
@@ -41,12 +41,18 @@ Based on live runs 14 to 21 ([notes](live-testing.md)). Each phase says what fin
 
 ### Phase 1: make results measurable and trustworthy
 
+*Status:* items 1 to 4 are built (`f3c959d`). The first trials comparison found two more problems, added below as items 5 and 6.
+
 1. **A repeat-run tool.** Run a task N times against a known answer and report the success rate, the correct-value rate, and median steps and time. Every later change is judged with it. *Done when* a live trial of a task is one command, and its report goes into the notes.
 2. **Shape checks on values.** A `pattern`, `min` and `max`, or an allowed list on requested values, enforced in code, so a misread like run 15's "3.15" can't come back as verified. *Done when* a value that fails its shape is rejected in a test and in a live rerun.
 3. **No goal-less sub-goals.** A planner reply whose sub-goals have no goal text is rejected or retried, instead of running as "Step 1" (run 19). *Done when* a parsing test covers it.
 4. **Evidence for search steps.** Every Everest run had its search step judged by a model, so none came back fully verified. Search-shaped steps should get a checkable outcome where the page allows one. *Done when* repeated Everest runs come back verified.
+5. **Guessed text checks.** In the trials, the 7B planner gave the article step a text check for "elevation of Mount Everest is", a phrase Wikipedia never shows, and two runs failed on the right page. Sentence-like text checks next to a url check that already pins the page should be treated as guesses, the way guessed search URLs are. *Done when* a parsing test covers it and repeated 7B Everest runs recover.
+6. **The caller's value checks win.** When the planner declares a value with the same name as one the caller requested, the caller's `pattern`, `min`, and `max` are dropped; it happened in two of three python.org trials. *Done when* a test shows the caller's checks apply either way.
 
 ### Phase 2: a stronger planner
+
+*Status:* the 14B-planner, Claude-planner, and plan-reuse configs are built (`f3c959d`). In the first comparison, the 14B planner found Mount Everest 3 of 3 times, fully verified, against 1 of 3 for the 7B baseline. It doubled the time on lookups and read the python.org version right only 1 of 3 times, because the value reader is still the 7B model. Plan-reuse runs are in progress, and the Claude planner needs an API key ([learnings](learnings.md#7-a-stronger-planner-helps-multi-step-tasks-and-costs-time)).
 
 Compare, with the phase 1 tool and on the same tasks:
 

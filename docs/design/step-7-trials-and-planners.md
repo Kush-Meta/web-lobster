@@ -46,6 +46,23 @@
   - a two-config run against a local site, with fresh memory;
   - a run with shared memory.
 
+## Results so far
+
+The first comparison, 18 runs of `trials/web.yaml` with fresh memory ([../live-testing.md](../live-testing.md#measured-with-web-lobster-trials-step-7)):
+
+- **The 14B planner fixed multi-step planning on Everest:** 3 of 3 right and verified, against 1 of 3 for the 7B baseline.
+- **It doubled the time on lookups** that start on the answer page (122 s against 59 s median), because Ollama swaps the two models.
+- **It didn't make values more reliable.** Values are read by the executor's 7B model in both configs, and under the 14B config that reader produced a python.org version that passed its pattern only 1 of 3 times. The baseline managed 3 of 3.
+- **Search text checks worked:** every Everest search step was proven by code.
+- **Shape checks worked:** the two missed python.org values came back missing, not wrong, and those runs weren't verified.
+
+Two new problems, now phase 1 items on the roadmap:
+
+1. **Guessed text checks.** The 7B planner's text check for "elevation of Mount Everest is" made two runs fail on the right page.
+2. **Dropped value checks.** When the planner declares a value with the same name as the caller's, the caller's pattern is dropped.
+
+Plan-reuse runs with shared memory were still in progress when this was written. The lessons are collected in [../learnings.md](../learnings.md).
+
 ## Known limits
 
 - **Live sites change.** `python-latest` needs its expected version updated with each release, and a site outage reads as a failure.

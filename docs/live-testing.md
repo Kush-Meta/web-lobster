@@ -83,6 +83,36 @@ The same machine and model, after [step 6](design/step-6-planner-briefing.md) ad
 
 Runs 19 to 21 measure the folding code: 3 of 3 found the right answer, with a median of 9 steps and 171 s. Runs 11 and 18 took 35 and 27 steps, and run 16 failed. None of the three was fully verified, because the search step has no evidence and a model judged it. Three runs is still a small sample.
 
+## Measured with `web-lobster trials` (step 7)
+
+The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.
+
+### Part A: 7B for every role against a 14B planner
+
+18 runs in 54 minutes.
+
+| Task | Config | Done | Right | Verified | Median steps | Median time |
+|---|---|---|---|---|---|---|
+| eiffel | `local-16gb` | 3/3 | 3/3 | 3/3 | 0 | 59 s |
+| eiffel | `local-16gb-14b-planner` | 3/3 | 3/3 | 3/3 | 0 | 122 s |
+| python-latest | `local-16gb` | 3/3 | 3/3 | 1/3 | 3 | 129 s |
+| python-latest | `local-16gb-14b-planner` | 3/3 | 1/3 | 0/3 | 10 | 273 s |
+| everest | `local-16gb` | 1/3 | 1/3 | 1/3 | 8 | 167 s |
+| everest | `local-16gb-14b-planner` | 3/3 | 3/3 | 3/3 | 5 | 193 s |
+
+What the run records show:
+
+- **Everest, 7B:** the two failures (20 and 8 steps) broke on the same step. "Open the article about Mount Everest" had two checks. The url check passed, and the browser was on the article, but the planner's text check for "elevation of Mount Everest is" failed, because Wikipedia never uses that phrase. The search step, now with a text check for its term, was proven by code in every run.
+- **Everest, 14B planner:** the same three-step plan every time (open the search page, search for 'Mount Everest', open the article), with only a url check on the article. All three runs were fully verified, in 5 steps each.
+- **Eiffel Tower:** perfect under both configs. The 14B config took twice as long, because Ollama swaps the 9 GB planner model and the 4.7 GB executor model in and out.
+- **python.org, 7B:** the typed value was 3.14.7 in all three runs, but the free-text answer said "3.15" all three times. In two runs the planner declared `latest_version` itself, without a pattern, and that replaced the trial's version with its pattern: a bug.
+- **python.org, 14B planner:** the free-text answer, written by the 14B model, said 3.14.7 all three times. The typed value, read by the 7B executor model, came back with nothing that passed the version pattern in two runs, one of which never left the downloads page. Those runs reported the value as missing rather than wrong, and weren't verified. Why the reader failed there isn't explained yet.
+- **Blocked requests** on python.org ranged from 61 to 585 per run, all of them the page's own scripts.
+
+### Part B: plan reuse
+
+`local-16gb-plan-reuse` with shared memory, so later runs of a task can reuse a plan that worked earlier, was still running when this was written.
+
 ## Reproduce
 
 ```bash
