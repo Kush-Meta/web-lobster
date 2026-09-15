@@ -316,10 +316,9 @@ class Orchestrator:
             if self.state.is_over_budget:
                 logger.warning("step_budget_exhausted", steps=self.state.step_count)
 
-            # 4. Extract the answer from the final page state.
-            answer = None
-            if self.state.current_observation:
-                answer = await self._extract_answer(task, self.state.current_observation)
+            # 4. Extract the answer from the final page. A run whose sub-goals were all
+            # met before any action never observed a page, so don't require one.
+            answer = await self._extract_answer(task, self.state.current_observation)
 
             # 5. Learn from this run and save to episodic memory
             elapsed = time.time() - start_time
@@ -805,18 +804,24 @@ class Orchestrator:
                 parts.append(f"mandate blocked {blocked}")
         return "; ".join(parts)
 
-    async def _extract_answer(self, task: str, observation) -> Optional[str]:
+    async def _extract_answer(self, task: str, observation=None) -> Optional[str]:
         """After task completion, ask the model to extract a direct answer from the page."""
         page_content = await self.browser.page_text(main_only=True, limit=PAGE_TEXT_LIMIT)
-        if not page_content:
+        if not page_content and observation:
             page_content = (observation.page_text or observation.accessibility_tree or "")[:3000]
+        if not page_content:
+            return None
+        url = self.browser.current_url
+        if self.enforcer:
+            url = self.enforcer.redact(url)
+        title = observation.title if observation else ""
 
         prompt = f"""The user asked: "{task}"
 
 The agent has finished. Here is the final page content:
 
-URL: {observation.url}
-Title: {observation.title}
+URL: {url}
+Title: {title}
 
 PAGE TEXT:
 {page_content}

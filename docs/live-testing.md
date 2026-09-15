@@ -28,8 +28,11 @@ In order. Fixes landed between runs, so each run shows the code as it stood then
 | 8 | python.org again | MCP stdio | Done; 3.14.7, 1 of 2 steps verified | 8 | 195 s | After the noise fix, 122 blocks were all flagged as page-script traffic, with 2 warning lines in the log |
 | 9 | Everest again, with plan tidying and "already there" | MCP stdio | Failed | 40 | 517 s | Sub-goal 1 was done at 18 s without acting. The plan still split the search into "type", "click search", and "click the article". Once typing and searching landed on the article, the typing step failed its own check, and the run never recovered. This is what skip-ahead fixes |
 | 10 | python.org again | MCP stdio | Verified; 3.14.7 | 0 | 42 s | The browser started on the answer page, so the one sub-goal was proven before any action and the value read straight off the page |
+| 11 | Everest again, with skip-ahead | MCP stdio | Done; 8,848.86 m, 3 of 4 steps verified | 35 | 478 s | The full search from the main page finished with the right value, checked as a number. The plan was still click by click ("type", "click search", "click the article"), and the last two steps took 30 steps between them. No step failed, so skip-ahead never had to fire |
+| 12 | Eiffel Tower height, the README's CLI example | CLI, no mandate | Done, verified, but **no answer** | 0 | 7 s | The browser started on the article, so the one sub-goal was proven before any action. Answer extraction only ran after a page observation, and this run never made one |
+| 13 | Same | CLI, no mandate | Done, verified; "The Eiffel Tower is 330 meters (1,083 feet) tall." | 0 | 21 s | Fixed: the answer is read from the live page whether or not the run observed one. Run 1 took 14 steps and 250 s |
 
-Both values were checked against the live pages: Wikipedia gives the tower as 330 m, and python.org lists 3.14.7 as the latest release.
+The tower's height (330 m) and the Python release (3.14.7) were checked against the live pages. 8,848.86 m is Everest's official height from the 2020 China–Nepal survey.
 
 ## What was fixed
 
@@ -47,6 +50,7 @@ Both values were checked against the live pages: Wikipedia gives the tower as 33
 | Analytics and error reporting flooded the executor | Still blocked and recorded. The executor hears only about page loads, form posts, script writes back to the same site, data leaks, and expiry, with repeats collapsed | `worth_reporting` in `mandate/enforcer.py` |
 | MCP results listed hundreds of identical blocks | Blocks are grouped by kind and site with counts, and page-script traffic is flagged `background` | `blocked_actions` in `mcp_server/service.py` |
 | `-c configs/local-16gb.yaml` would silently switch to Claude once `ANTHROPIC_API_KEY` was set | A config passed with `-c` is used as written | `__main__.py`, `ui/server.py` |
+| A run finished before any action gave no answer | The answer is read from the live page, with the URL redacted under a mandate, whether or not a page was observed | `_extract_answer` in `core/orchestrator.py` |
 | httpx logged every model call into the host's server log | Quieted to warnings unless `-v` | `__main__.py` |
 
 What these fixes do to the guarantees:
@@ -58,7 +62,7 @@ What these fixes do to the guarantees:
 ## Still weak
 
 - A 7B planner still writes click-by-click plans. Tidying and skipping ahead recover some of them, not all.
-- A step takes 5 to 15 seconds on this machine, so lookups take one to five minutes.
+- A step takes 5 to 15 seconds on this machine. Lookups that start on the right page finish in under a minute, but the Everest search from the main page took 8.
 - These runs show a local model completing honest tasks, not how often it falls for planted instructions. The benchmark's live mode hasn't run yet.
 - Claude configs weren't run live in this round.
 

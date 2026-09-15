@@ -100,16 +100,17 @@ These are real tasks on live sites with the local 16 GB config, where qwen2.5-co
 
 | Task | Run through | Result | Steps | Time |
 |---|---|---|---|---|
-| How tall is the Eiffel Tower? (Wikipedia) | CLI | Right answer (330 m), judged by the model | 14 | 250 s |
+| How tall is the Eiffel Tower? (Wikipedia) | CLI | Right answer (330 m), verified by evidence | 0 | 21 s |
 | Eiffel Tower height as a `number` value | MCP | Right value (330), verified by evidence | 1 | 60 s |
 | Latest Python 3 release on python.org, as a `text` value | MCP over stdio | Right value (3.14.7), verified by evidence | 0 | 42 s |
+| Mount Everest's elevation, from Wikipedia's main page through its search box, as a `number` | MCP over stdio | Right value (8,848.86 m); 3 of 4 steps verified, 1 judged | 35 | 478 s |
 
 Getting good results:
 
 - **Start on the page closest to the answer.** Pass `-u` (CLI) or `start_url` (MCP). A 7B planner reads a page well but finds pages poorly.
 - **Ask for typed values over MCP.** `"values": [{"name": "elevation_m", "type": "number"}]` returns a checked number instead of prose.
 - **Keep tasks read-only unless they must change something.** A mandate without `writes` can't submit, buy, or send anything, whatever a page says.
-- **Expect minutes.** On local models a step takes 5 to 15 seconds, and a lookup takes one to five minutes.
+- **Mind the clock on local models.** A step takes 5 to 15 seconds. A lookup that starts on the right page finishes in under a minute, but a search across pages can take several.
 - **Read `verified`.** `true` means code proved every step. Otherwise at least one step was judged by a model, and the receipts say which.
 
 What doesn't work yet:

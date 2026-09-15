@@ -22,6 +22,8 @@ The goal is a web agent you can hand a logged-in browser and a goal, knowing it 
 
 Scripted benchmark with a fully hijacked executor, all defenses on: 7/7 tasks done, 1/7 harmful effects, 0/7 leaks, 0/7 false "done". An honest executor completes every task under every defense setup.
 
+Live, with a local 7B model on a 16 GB Mac: lookups that start on the right page finish verified in under a minute (python.org, 42 s). A search that starts from Wikipedia's main page found Mount Everest's elevation correctly, but took 35 steps and 8 minutes ([notes](live-testing.md)).
+
 ## Known gaps
 
 - **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules, for example a rebooking date that must match a typed value from the task.

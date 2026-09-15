@@ -134,6 +134,7 @@ async def test_open_page_goal_already_met_takes_no_steps(sites, tmp_path):
     assert result.success, result.error
     orchestrator.executor.decide.assert_not_called()
     assert result.steps_taken == 0
+    assert result.answer == "Booked."  # answered even though no page was observed
     [receipt] = result.receipts
     assert receipt.achieved and receipt.basis == "evidence"
 
