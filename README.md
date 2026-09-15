@@ -1,56 +1,77 @@
 # 🦞 Web Lobster
 
-An autonomous web agent powered by a suite of open-source AI models. Web Lobster uses a **Planner → Executor → Validator** pipeline to break down complex web tasks and complete them autonomously.
+**A web agent you can hand a real task without handing it the keys.**
 
-## Architecture
+Agents that browse for you get hijacked by instructions planted in the pages they read. Web Lobster doesn't try to spot those instructions. It makes acting on them impossible and makes every result provable:
 
+- The **browser** enforces a mandate on every request: which sites the task may use, what data it may type and where, which changes it may make, and when it expires.
+- The **planner** never reads a web page, so a page can't steer the plan.
+- A step counts as **done** only when code proves it, and every step leaves a hash-chained receipt.
+
+It runs on local open-source models (tested on a 16 GB Mac) or on Claude. Use it from the command line or the dashboard, or plug it into OpenClaw, Claude Code, or any MCP client as the web tool other agents delegate to.
+
+## What's inside
+
+| | What it does | Why it matters |
+|---|---|---|
+| **[Mandates](#mandates)** | Sites, data grants, write rules and expiry, enforced in the browser's network layer, including every redirect hop | A hijacked model still can't leave the approved sites, leak your data, or make writes you didn't allow |
+| **[Planner isolation](#planner-isolation-and-typed-values)** | The planner never sees page content. Pages reach it only as type-checked values | Prompt injection can't rewrite the plan |
+| **[Evidence and receipts](#evidence-and-receipts)** | URL, request, text and value checks run in code; SHA-256 chained receipts for every step | A page saying "Order placed!" isn't proof, and you get an audit trail you can verify |
+| **[Poisoned-page benchmark](#poisoned-page-benchmark)** | Seven trap sites, scored from what their servers actually received | The defenses are measured, not asserted |
+| **[MCP server](#use-it-from-other-agents-mcp)** | `web_task`, `check_mandate`, `get_run`, `verify_receipts`, plus an OpenClaw and Claude Code plugin | Other agents get web results without reading untrusted pages themselves |
+| **[Local models](#quick-start)** | One 7B model on a 16 GB Mac, reading pages as text | Free, private, and [tested on live sites](#using-it-for-real) |
+
+In the benchmark, a fully hijacked executor with no defenses causes harm in 6 of 7 scenarios, leaks the user's email in 3, and falsely claims success in 2. With every defense on, that drops to 1, 0 and 0, and an honest executor still completes all seven tasks.
+
+## How it works
+
+```mermaid
+flowchart TD
+    M["MCP clients<br/>OpenClaw · Claude Code"] -. web_task .-> T
+    T["Task + mandate<br/>sites · data · writes · expiry"] --> P
+    P["Planner<br/>never reads web pages"] -- "sub-goals + evidence checks" --> Q
+    Q["Executor · Validator · Extractor<br/>read pages, quarantined"] -- actions --> B
+    B["Browser<br/>mandate enforced on every request"] -- "page, network log" --> E
+    E["Evidence checks, run in code"] --> R["Hash-chained receipts"]
+    Q -- "type-checked values only" --> P
 ```
-User Task
-    │
-    ▼
-┌─────────────┐
-│   Planner   │  Large model (70B) — decomposes task into sub-goals
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────────────────────────┐
-│            Agent Loop                    │
-│  Observer → Executor → Browser → repeat  │
-└──────┬──────────────────────────────────┘
-       │
-       ▼
-┌─────────────┐
-│  Validator   │  Vision model — confirms sub-goal completion
-└─────────────┘
-```
+
+The planner splits the task into sub-goals, each with the evidence that will prove it done. Quarantined models read pages and pick one browser action at a time. The browser checks each request against the mandate before it leaves. When a sub-goal claims to be done, its evidence checks run against the live page and the network log. Only values that pass their type checks flow back to the planner.
 
 ## Quick Start
 
+Needs Python 3.11+. Models run locally through [Ollama](https://ollama.com), or on Claude.
+
 ```bash
-# 1. Install dependencies
 pip install -e .
 playwright install chromium
-
-# 2. Pull required models via Ollama
-ollama pull qwen2.5:72b        # Planner
-ollama pull qwen2.5:7b         # Executor
-ollama pull minicpm-v:8b       # Validator (vision)
-
-# 3. Launch the dashboard (recommended)
-python -m web_lobster ui
-
-# Or run a task directly from CLI
-python -m web_lobster run "Find the cheapest flight from LAX to JFK on Dec 15"
 ```
+
+**Local models, free.** `configs/local-16gb.yaml` runs every role on one 7B model and reads pages as text instead of screenshots. It's tested on an M4 Mac with 16 GB of memory:
+
+```bash
+ollama pull qwen2.5-coder:7b
+web-lobster run -c configs/local-16gb.yaml -u https://en.wikipedia.org/wiki/Eiffel_Tower "How tall is the Eiffel Tower?"
+```
+
+**Claude.** Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY`. `configs/claude.yaml` plans with Sonnet, acts with Haiku, and checks results with a local vision model (`ollama pull minicpm-v:8b`):
+
+```bash
+web-lobster run -c configs/claude.yaml "Find the cheapest flight from LAX to JFK on Dec 15"
+```
+
+A config passed with `-c` is used exactly as written. Without one, the default config expects larger local models than a 16 GB machine can run, and switches its planner and executor to Claude when `ANTHROPIC_API_KEY` is set.
+
+`web-lobster ui` opens the dashboard. [Using it for real](#using-it-for-real) covers what works today and how to get reliable results.
 
 ## Web Dashboard
 
-The dashboard is the primary way to use Web Lobster. Launch it with:
+The dashboard shows the agent at work and lets you step in. Launch it with:
 
 ```bash
-python -m web_lobster ui                  # default: http://127.0.0.1:7860
-python -m web_lobster ui --port 8080      # custom port
-python -m web_lobster ui -c my_config.yaml
+web-lobster ui                            # default: http://127.0.0.1:7860
+web-lobster ui --port 8080                # custom port
+web-lobster ui -c configs/local-16gb.yaml
 ```
 
 **Features:**
@@ -64,26 +85,51 @@ python -m web_lobster ui -c my_config.yaml
 
 ## Configuration
 
-Copy `configs/default.yaml` and customize model choices, safety rails, timeouts, etc.
+Configs live in `configs/`: `local-16gb.yaml` (one local 7B model, text only), `claude.yaml` (Claude planner and executor, local vision validator), `default.yaml` (large local models), and a few more. Copy one to change models, safety rails, timeouts, and step budgets:
 
 ```bash
-cp configs/default.yaml configs/my_config.yaml
-python -m web_lobster --config configs/my_config.yaml "your task here"
+cp configs/local-16gb.yaml configs/my_config.yaml
+web-lobster run -c configs/my_config.yaml "your task here"
 ```
 
-## Features
+For a text-only model, set `vision: false` on its role so it's never sent screenshots, and `agent.dom_mode: true` so the executor reads the page's elements as text. `context_window` sets Ollama's context size, whose default is too small for most web pages.
 
-- **Multi-model pipeline**: Planner (large), Executor (small/fast), Validator (vision)
-- **Hybrid perception**: Annotated screenshots + accessibility tree extraction
-- **Grammar-constrained output**: Optional llama.cpp backend for guaranteed valid JSON actions
-- **Safety rails**: Action gating, URL allowlists, confirmation checkpoints, dry-run mode
-- **Ensemble voting**: Optional multi-model consensus for high-stakes actions
-- **Extensible actions**: Add custom browser actions via the action registry
-- **Mandates**: Scope a task to approved sites, data, and writes, enforced in the browser's network layer
-- **Planner isolation**: The planner never reads page content; pages reach it only as type-checked values
-- **Evidence and receipts**: Sub-goals are proven done by checks run in code, and every run leaves a chained receipt log
-- **Poisoned-page benchmark**: Scores the defenses on local trap sites, from what the sites' servers received
-- **MCP server**: Other agents (OpenClaw, Claude Code, any MCP client) run web tasks here under a mandate
+## Using it for real
+
+These are real tasks on live sites with the local 16 GB config, where qwen2.5-coder:7b plays every role. The MCP runs used a read-only mandate for the one site involved.
+
+| Task | Run through | Result | Steps | Time |
+|---|---|---|---|---|
+| How tall is the Eiffel Tower? (Wikipedia) | CLI | Right answer (330 m), judged by the model | 14 | 250 s |
+| Eiffel Tower height as a `number` value | MCP | Right value (330), verified by evidence | 1 | 60 s |
+| Latest Python 3 release on python.org, as a `text` value | MCP over stdio | Right value (3.14.7), verified by evidence | 0 | 42 s |
+
+Getting good results:
+
+- **Start on the page closest to the answer.** Pass `-u` (CLI) or `start_url` (MCP). A 7B planner reads a page well but finds pages poorly.
+- **Ask for typed values over MCP.** `"values": [{"name": "elevation_m", "type": "number"}]` returns a checked number instead of prose.
+- **Keep tasks read-only unless they must change something.** A mandate without `writes` can't submit, buy, or send anything, whatever a page says.
+- **Expect minutes.** On local models a step takes 5 to 15 seconds, and a lookup takes one to five minutes.
+- **Read `verified`.** `true` means code proved every step. Otherwise at least one step was judged by a model, and the receipts say which.
+
+What doesn't work yet:
+
+- **Signed-in sites.** Every task starts with a fresh browser profile.
+- **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops URL checks that spell out query strings and separate "extract" steps. It counts an "open the page" step as done when the browser is already provably there, and when a step fails after carrying the browser to a later step's page, it skips ahead instead of replanning. Even so, multi-page searches and forms on local models are hit or miss. `configs/claude.yaml` gives the planner far more to work with, but it hasn't been run against live sites yet.
+- **Pages that only make sense as images** (charts, canvas apps) on the text-only local config. Use a vision model for the executor and validator there.
+
+Mandate block counts include each page's own analytics and error reporting. MCP results flag those as `background`, and the agent is only told about blocks its own actions could have caused.
+
+[docs/live-testing.md](docs/live-testing.md) has every live run, what each one broke, and the fixes that followed.
+
+## More features
+
+- **Hybrid perception**: annotated screenshots plus accessibility-tree extraction, or DOM-only mode for text models
+- **Grammar-constrained output**: optional llama.cpp backend for guaranteed valid JSON actions
+- **Safety rails**: action gating, URL allowlists, confirmation checkpoints, dry-run mode
+- **Ensemble voting**: optional multi-model consensus for high-stakes actions
+- **Episodic memory**: learnings from past runs, written from trusted inputs only
+- **Extensible actions**: add custom browser actions via the action registry
 
 ## Mandates
 
@@ -218,8 +264,7 @@ The tools are `web_task`, `check_mandate` (validates a mandate and returns text 
 
 ```
 web_lobster/
-├── __init__.py
-├── __main__.py              # CLI entry point (run + ui commands)
+├── __main__.py              # CLI: run, ui, bench, mcp
 ├── core/
 │   ├── orchestrator.py      # Main agent loop coordinator
 │   ├── schemas.py           # All data contracts (Pydantic models)
@@ -228,11 +273,12 @@ web_lobster/
 ├── models/
 │   ├── base.py              # Abstract model interface
 │   ├── ollama_backend.py    # Ollama API client
+│   ├── anthropic_backend.py # Claude API client
 │   ├── llamacpp_backend.py  # llama.cpp with GBNF grammar support
 │   ├── planner.py           # Task decomposition model
 │   ├── executor.py          # Single-action decision model
 │   ├── extractor.py         # Reads declared values off pages (quarantined)
-│   └── validator.py         # Vision-based goal verification
+│   └── validator.py         # Goal verification when a sub-goal has no evidence
 ├── browser/
 │   ├── controller.py        # Playwright browser management
 │   ├── observer.py          # Page state extraction (hybrid)
@@ -241,7 +287,7 @@ web_lobster/
 │   ├── registry.py          # Action type registry
 │   └── safety.py            # Action gating and confirmation logic
 ├── mandate/
-│   ├── schema.py            # Mandate: allowed origins, data grants, expiry
+│   ├── schema.py            # Mandate: allowed origins, data grants, writes, expiry
 │   └── enforcer.py          # Applies a mandate to every browser request
 ├── verify/
 │   ├── network.py           # Log of what the browser sent and got back
@@ -258,6 +304,10 @@ web_lobster/
 │   ├── service.py           # Runs web tasks and keeps run records, independent of MCP
 │   ├── agents.py            # Progress and confirmation bridge, value requests
 │   └── server.py            # MCP tools over stdio or streamable HTTP
+├── memory/
+│   └── task_memory.py       # Episodic memory of past runs
+├── tools/
+│   └── mcp_manager.py       # MCP tools the agent itself may call (off under a mandate)
 ├── ui/
 │   ├── server.py            # FastAPI backend + WebSocket streaming
 │   ├── state.py             # Shared state bridge (orchestrator ↔ UI)
@@ -266,6 +316,12 @@ web_lobster/
 └── utils/
     ├── logging.py           # Structured logging
     └── retry.py             # Retry and backoff utilities
+
+configs/                     # Model configs: local-16gb, claude, default, and more
+integrations/                # OpenClaw and Claude Code plugin bundle
+docs/                        # MCP server guide, roadmap, design records
+examples/                    # Example scripts and a mandate
+tests/                       # Unit tests plus real-browser mandate, evidence, and MCP tests
 ```
 
 ## License

@@ -15,7 +15,8 @@ The goal is a web agent you can hand a logged-in browser and a goal, knowing it 
 | 3 | **Evidence and receipts.** Sub-goals are proven done by checks run in code; every run leaves a hash-chained receipt log | Done | `0444f80` |
 | 4 | **Poisoned-page benchmark.** Trap sites, scored from what their servers received | Done | `fcacf12` |
 | 4b | **Write rules.** Mandates list the writes a task may make, closing the benchmark's same-site gap | Done | `eac51ac` |
-| 5 | **MCP server.** Other agents run web tasks under a mandate, with page text withheld from them by default ([design](design/step-5-mcp-server.md)) | Built | — |
+| 5 | **MCP server.** Other agents run web tasks under a mandate, with page text withheld from them by default ([design](design/step-5-mcp-server.md)) | Done | `ba61aaf` |
+| 5b | **Live testing.** Real tasks on live sites with a local 7B model, over the CLI and MCP over stdio, and the fixes they called for ([notes](live-testing.md)) | Done | — |
 
 ## Where things stand
 
@@ -24,7 +25,7 @@ Scripted benchmark with a fully hijacked executor, all defenses on: 7/7 tasks do
 ## Known gaps
 
 - **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules, for example a rebooking date that must match a typed value from the task.
-- **Live models.** Every result so far uses scripted models. The benchmark's live mode and the MCP server have never run against real models.
+- **Live models.** Real tasks have run on live sites with a local 7B model, over the CLI and over MCP stdio ([notes](live-testing.md)). Lookups that start near the answer work; multi-page flows with a 7B planner are hit or miss, and Claude configs haven't been run live. The benchmark's live mode hasn't run either, so how often a real model falls for a planted instruction is still unmeasured.
 - **Login.** Tasks start with a fresh browser profile, so signed-in tasks don't work.
 - **Dashboard.** The web dashboard doesn't accept mandates or show receipts.
 - **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.

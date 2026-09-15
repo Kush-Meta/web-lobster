@@ -42,6 +42,14 @@ Then add the skill from [integrations/web-lobster-plugin](../integrations/web-lo
 {"mcpServers": {"web-lobster": {"command": "web-lobster", "args": ["mcp"]}}}
 ```
 
+**Paths.** Hosts start the server from their own working directory, often without your virtualenv on `PATH`. Use absolute paths for the command and the config, for example with the local 16 GB config:
+
+```bash
+openclaw mcp set web-lobster '{"command":"/path/to/web-lobster/.venv/bin/web-lobster","args":["mcp","-c","/path/to/web-lobster/configs/local-16gb.yaml"],"requestTimeoutMs":900000}'
+```
+
+With local models a simple lookup takes one to five minutes, so keep the long timeout.
+
 **User data.** Put values the agent may type in web-lobster's `.env` as `WEB_LOBSTER_DATA_*` variables (for example `WEB_LOBSTER_DATA_EMAIL=you@example.com`) and grant them with `value_env`. The value then never passes through the calling model. Only variables with that prefix can be read, so a hijacked caller can't hand the server's other secrets to a website.
 
 ## Tools

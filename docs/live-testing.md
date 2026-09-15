@@ -1,0 +1,80 @@
+# Live testing
+
+Until step 5, every result came from scripted models. This round ran real tasks on live sites with a local model, to find what breaks when web-lobster is used for real, and fixed what it found.
+
+## Setup
+
+- **Machine:** Apple M4 with 16 GB of memory, models served by Ollama.
+- **Model:** qwen2.5-coder:7b as planner, executor, and validator ([`configs/local-16gb.yaml`](../configs/local-16gb.yaml)): text only, DOM mode, 16k context. gemma3:12b, a vision model, was also tried for reading values: it was slower and no more accurate.
+- **Paths:**
+  - `web-lobster run` on the CLI.
+  - `web_task` in-process, through the MCP SDK's in-memory client.
+  - `web-lobster mcp` over stdio as a subprocess, the way OpenClaw and Claude Code launch it.
+- **Mandates:** read-only, one origin per task. Nothing was submitted, bought, or sent.
+
+## Runs
+
+In order. Fixes landed between runs, so each run shows the code as it stood then.
+
+| # | Task | Path | Outcome | Steps | Time | What it showed |
+|---|---|---|---|---|---|---|
+| 1 | Eiffel Tower height on Wikipedia | CLI, no mandate | Done; right answer (330 m), judged by the model | 14 | 250 s | The loop works on a 7B model |
+| 2 | Same, as a `number` value | MCP in-process | Done, not verified; 330 | 18 | 298 s | The mandate blocked 11 analytics beacons and reported each to the executor, which got confused. The planner didn't know the browser started on the article |
+| 3 | Same | MCP in-process | Verified, **wrong value (300)** | 1 | 37 s | Values were read from the first 3,000 characters, which ended in the site's menus |
+| 4 | Same | MCP in-process | Verified; 330 | 1 | 60 s | Reading the main content fixed it |
+| 5 | Mount Everest's elevation via Wikipedia's search box | MCP stdio | Failed | 40 | 359 s | The stdio path works end to end. The planner set a guessed search URL (`/w/index.php?search=...`) as evidence, and Wikipedia never shows it: searches redirect to the article |
+| 6 | Latest Python 3 release on python.org, as a `text` value | MCP in-process | Done, not verified; 3.14.7 | 19 | 329 s | python.org's error reporting retried a blocked POST 427 times, flooding the logs and the executor's history. The plan ended with "Extract the version number", which sent the executor clicking away from the answer |
+| 7 | Everest again, with a stricter planner prompt | MCP stdio | Stopped by hand, stuck in the same loop | 16 | — | Prompting alone doesn't stop a 7B planner from writing click-by-click plans and guessing URLs |
+| 8 | python.org again | MCP stdio | Done; 3.14.7, 1 of 2 steps verified | 8 | 195 s | After the noise fix, 122 blocks were all flagged as page-script traffic, with 2 warning lines in the log |
+| 9 | Everest again, with plan tidying and "already there" | MCP stdio | Failed | 40 | 517 s | Sub-goal 1 was done at 18 s without acting. The plan still split the search into "type", "click search", and "click the article". Once typing and searching landed on the article, the typing step failed its own check, and the run never recovered. This is what skip-ahead fixes |
+| 10 | python.org again | MCP stdio | Verified; 3.14.7 | 0 | 42 s | The browser started on the answer page, so the one sub-goal was proven before any action and the value read straight off the page |
+
+Both values were checked against the live pages: Wikipedia gives the tower as 330 m, and python.org lists 3.14.7 as the latest release.
+
+## What was fixed
+
+| Problem | Fix | Where |
+|---|---|---|
+| qwen2.5-coder:7b rejects images with HTTP 400 | `vision: false` per role. The Ollama backend also retries once without images and remembers the model is text only | `core/config.py`, `models/ollama_backend.py` |
+| Ollama's default context cut pages short | `context_window`, sent as `num_ctx` | same |
+| Values read from the site's menus | Values and the final answer come from the page's `main`, `[role=main]`, or `article` text, up to 12,000 characters, redacted before truncation | `browser/controller.py`, `core/orchestrator.py`, `models/extractor.py` |
+| Planner planned steps to reach the start page | The planner is told where the browser starts: origin and path only, since query strings can carry tokens | `models/planner.py` |
+| Guessed search-result URLs made sub-goals impossible | URL checks that spell out a query string are dropped | `tidy_sub_goals` in `models/planner.py` |
+| "Extract the ..." steps sent the executor away from the answer | Read-only sub-goals with no evidence are dropped, and their values move to the step before | same |
+| A replanned goal was named "Step 1" | Goal text is also read from `description`, `sub_goal`, `task`, and `name` | same |
+| "Open the page" steps when the browser was already there | Such a step counts as done before any action when its url check already passes. Only for goals that open a page, and never with a request check | `_already_there` in `core/orchestrator.py` |
+| A step like "Type the query" fails once the search lands on the result | When a failed step took the browser to a page that proves a later sub-goal (its url check passes now but didn't where the failed step began), the steps in between are skipped and the later one is completed on that proof. Never past a step with a request check, because skipped steps count toward completion | `_skip_to_later_goal` in `core/orchestrator.py` |
+| Analytics and error reporting flooded the executor | Still blocked and recorded. The executor hears only about page loads, form posts, script writes back to the same site, data leaks, and expiry, with repeats collapsed | `worth_reporting` in `mandate/enforcer.py` |
+| MCP results listed hundreds of identical blocks | Blocks are grouped by kind and site with counts, and page-script traffic is flagged `background` | `blocked_actions` in `mcp_server/service.py` |
+| `-c configs/local-16gb.yaml` would silently switch to Claude once `ANTHROPIC_API_KEY` was set | A config passed with `-c` is used as written | `__main__.py`, `ui/server.py` |
+| httpx logged every model call into the host's server log | Quieted to warnings unless `-v` | `__main__.py` |
+
+What these fixes do to the guarantees:
+
+- **The mandate is unchanged.** Every request it blocked before is still blocked and recorded. Only what the executor is told changed.
+- **Dropping a guessed URL check weakens that sub-goal's proof.** It falls back to the validator model, and its receipt says so. This trades verification for finishing, and only for checks that were guesses.
+- **Counting a step done early and skipping ahead both rest on a url check** that passes against the live browser, the same proof evidence uses. Neither ever passes over a required write.
+
+## Still weak
+
+- A 7B planner still writes click-by-click plans. Tidying and skipping ahead recover some of them, not all.
+- A step takes 5 to 15 seconds on this machine, so lookups take one to five minutes.
+- These runs show a local model completing honest tasks, not how often it falls for planted instructions. The benchmark's live mode hasn't run yet.
+- Claude configs weren't run live in this round.
+
+## Reproduce
+
+```bash
+ollama pull qwen2.5-coder:7b
+web-lobster run -c configs/local-16gb.yaml -u https://en.wikipedia.org/wiki/Eiffel_Tower "How tall is the Eiffel Tower?"
+```
+
+Over MCP, start `web-lobster mcp -c configs/local-16gb.yaml` from your client and call `web_task` with, for example:
+
+```json
+{"task": "Find the version number of the latest Python 3 release on python.org.",
+ "mandate": {"origins": ["https://www.python.org"], "expires_in_minutes": 20},
+ "start_url": "https://www.python.org/downloads/",
+ "values": [{"name": "latest_version", "type": "text", "description": "the latest Python 3 release version"}],
+ "include_page_text": true}
+```
