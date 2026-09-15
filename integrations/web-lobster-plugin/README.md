@@ -18,7 +18,7 @@ pip install -e /path/to/web-lobster
 playwright install chromium
 ```
 
-Configure models the way you would for `web-lobster run` (see the main README). Put user data the agent may type in web-lobster's `.env` file as `WEB_LOBSTER_DATA_*` variables, such as `WEB_LOBSTER_DATA_EMAIL=you@example.com`, so values never pass through the calling model.
+Configure models the way you would for `web-lobster run` (see the main README). To use a specific config, such as the local 16 GB one, add it to the server's arguments with an absolute path, because hosts start the server from their own working directory: `"args": ["mcp", "-c", "/path/to/web-lobster/configs/local-16gb.yaml"]`. If `web-lobster` isn't on the host's `PATH`, set `command` to the full path of the script, for example `/path/to/web-lobster/.venv/bin/web-lobster`. Put user data the agent may type in web-lobster's `.env` file as `WEB_LOBSTER_DATA_*` variables, such as `WEB_LOBSTER_DATA_EMAIL=you@example.com`, so values never pass through the calling model.
 
 ## OpenClaw
 
