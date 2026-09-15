@@ -108,7 +108,7 @@ These are real tasks on live sites with the local 16 GB config, where qwen2.5-co
 | How tall is the Eiffel Tower? (Wikipedia) | CLI | Right answer (330 m), verified by evidence | 0 | 21 s |
 | Eiffel Tower height as a `number` value | MCP | Right value (330), verified by evidence | 1 | 60 s |
 | Latest Python 3 release on python.org, as a `text` value | MCP over stdio | Right value (3.14.7), verified by evidence | 0 | 42 s |
-| Mount Everest's elevation, from Wikipedia's main page through its search box, as a `number` | MCP over stdio | Right value (8,848.86 m); 3 of 4 steps verified, 1 judged | 35 | 478 s |
+| Mount Everest's elevation, from Wikipedia's main page through its search box, as a `number` | MCP over stdio | Right value (8,848.86 m) in 3 of 3 repeated runs; the search step is judged by the model | 9 (median) | 171 s (median) |
 
 Getting good results:
 
@@ -121,7 +121,7 @@ Getting good results:
 What doesn't work yet:
 
 - **Signed-in sites.** Every task starts with a fresh browser profile.
-- **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops URL checks that spell out query strings and separate "extract" steps. It counts an "open the page" step as done when the browser is already provably there, and when a step fails after carrying the browser to a later step's page, it skips ahead instead of replanning. Even so, multi-page searches and forms on local models are hit or miss. `configs/claude.yaml` gives the planner far more to work with, but it hasn't been run against live sites yet.
+- **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops URL checks that spell out query strings and separate "extract" steps. It counts an "open the page" step as done when the browser is already provably there, and when a step fails after carrying the browser to a later step's page, it skips ahead instead of replanning. In three repeated Everest runs after that, all three found the right answer, two of them in under three minutes. Other multi-page flows and forms have only been tried once each on local models, so treat them as hit or miss. `configs/claude.yaml` gives the planner far more to work with, but it hasn't been run against live sites yet.
 - **Pages that only make sense as images** (charts, canvas apps) on the text-only local config. Use a vision model for the executor and validator there.
 
 Mandate block counts include each page's own analytics and error reporting. MCP results flag those as `background`, and the agent is only told about blocks its own actions could have caused.

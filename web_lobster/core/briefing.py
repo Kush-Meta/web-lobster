@@ -72,6 +72,12 @@ _CLICK_LEVEL_GOAL = re.compile(
     r"^\s*(type|enter|input|press|hit|tap|scroll)\b|^\s*click\b.*\b(button|box|field|icon|tab)\b",
     re.IGNORECASE,
 )
+# Words that mean a step changes something, wherever they appear ("Click the Buy button").
+_CHANGE_WORD = re.compile(
+    r"\b(submit|send|book|buy|purchase|order|pay|check ?out|subscribe|sign up|register|post|publish|"
+    r"delete|remove|cancel|save|confirm|apply|reserve|rebook|transfer|upload)\b",
+    re.IGNORECASE,
+)
 
 
 def clip(text: object, limit: int = MAX_LINE) -> str:
@@ -84,6 +90,16 @@ def format_answer(value: Scalar) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
     return str(value)
+
+
+def is_click_level(goal: str) -> bool:
+    """Whether a sub-goal is one click or keystroke rather than an outcome."""
+    return bool(_CLICK_LEVEL_GOAL.search(goal))
+
+
+def mentions_a_change(text: str) -> bool:
+    """Whether text talks about changing something anywhere in it."""
+    return bool(_CHANGE_WORD.search(text))
 
 
 def _identifier(raw: object, fallback: str) -> str:
@@ -459,7 +475,7 @@ def review_plan(plan: TaskPlan, mandate: Optional[Mandate], max_sub_goals: int) 
                     "so the browser can't fill it in."
                 )
 
-        if len(goals) > 1 and _CLICK_LEVEL_GOAL.search(goal.goal):
+        if len(goals) > 1 and is_click_level(goal.goal):
             issues.append(
                 f"{label} is a single click or keystroke. Merge it into the outcome it serves "
                 '(for example "Search the site for …"); the browser agent works out the clicks itself.'

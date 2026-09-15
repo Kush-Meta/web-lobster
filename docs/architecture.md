@@ -117,7 +117,7 @@ Step by step, with the code that does it:
 | Entry | CLI, dashboard, or MCP builds a config, an optional mandate, and an `Orchestrator`. MCP requires a mandate | `__main__.py`, `ui/server.py`, `mcp_server/service.py` |
 | Recall | Similar past tasks by word overlap, plus recent trusted runs on the mandate's sites and the start origin | `Orchestrator.recall`, `memory/task_memory.py` |
 | Think | Build a `PlanningContext`, get a brief, compute mandate gaps, settle questions. May stop with `needs_input` | `Orchestrator.think`, `core/briefing.py`, `Planner.brief` |
-| Plan | Sub-goals, each with optional `extract` (values to read) and `evidence` (checks). Small-model mistakes are tidied | `Planner.plan`, `tidy_sub_goals` |
+| Plan | Sub-goals, each with optional `extract` (values to read) and `evidence` (checks). Small-model mistakes are tidied: guessed search URLs are dropped, and extract and click-level steps are folded into the outcomes they belong to | `Planner.plan`, `tidy_sub_goals` |
 | Review | Code checks the plan against the mandate and itself; one revision round | `review_plan`, `Orchestrator._review_plan`, `Planner.revise` |
 | Already there? | A sub-goal that only opens a page counts as done when its url check already passes | `Orchestrator._already_there` |
 | Act | Observe → executor picks one action → element check → mandate pre-check → safety gate → execute → report what the network layer blocked | `Orchestrator._execute_subgoal`, `browser/`, `models/executor.py` |

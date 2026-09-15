@@ -1,5 +1,7 @@
 """Tests for model response parsing (planner and executor)."""
 
+import json
+
 import pytest
 from web_lobster.models.planner import Planner
 from web_lobster.models.executor import Executor
@@ -118,6 +120,44 @@ That should work!'''
 
     def test_goal_text_under_another_key(self):
         assert self._parse('[{"id": 1, "description": "Open the article"}]')[0].goal == "Open the article"
+
+    def test_click_level_steps_fold_into_the_outcome_they_lead_to(self):
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Open the Wikipedia search box",
+             "evidence": [{"type": "url", "pattern": "https://en.wikipedia.org/wiki/Main_Page"}]},
+            {"id": 2, "goal": "Type 'Mount Everest' into the search box",
+             "evidence": [{"type": "text", "contains": "Mount Everest"}]},
+            {"id": 3, "goal": "Click the search button"},
+            {"id": 4, "goal": "Click on the 'Mount Everest' article",
+             "evidence": [{"type": "url", "pattern": "https://en.wikipedia.org/wiki/Mount_Everest"}]},
+            {"id": 5, "goal": "Extract the elevation in metres",
+             "extract": [{"name": "elevation", "type": "number"}],
+             "evidence": [{"type": "value", "name": "elevation", "op": "<=", "value": 9000}]},
+        ]))
+        assert [g.id for g in goals] == [1, 4]
+        assert goals[1].goal == (
+            "Type 'Mount Everest' into the search box, then click the search button, "
+            "then click on the 'Mount Everest' article"
+        )
+        assert [c.type for c in goals[1].evidence] == ["url", "value"]
+        assert [s.name for s in goals[1].extract] == ["elevation"]
+
+    def test_steps_with_their_own_proof_or_a_change_are_not_folded(self):
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Click the Buy button"},
+            {"id": 2, "goal": "Click the details tab",
+             "evidence": [{"type": "request", "method": "POST", "url": "https://shop.example/*"}]},
+            {"id": 3, "goal": "Open the receipt page"},
+        ]))
+        assert [g.goal for g in goals] == ["Click the Buy button", "Click the details tab", "Open the receipt page"]
+
+    def test_trailing_click_level_steps_fold_into_the_step_before(self):
+        goals = self._parse('[{"id": 1, "goal": "Open the search page"}, {"id": 2, "goal": "Press Enter"}]')
+        assert [g.goal for g in goals] == ["Open the search page, then press Enter"]
+
+    def test_a_plan_of_only_click_level_steps_is_left_alone(self):
+        goals = self._parse('[{"id": 1, "goal": "Type hello into the box"}, {"id": 2, "goal": "Click the search button"}]')
+        assert [g.goal for g in goals] == ["Type hello into the box", "Click the search button"]
 
 
 class TestExecutorParsing:

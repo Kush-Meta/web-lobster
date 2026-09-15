@@ -19,7 +19,7 @@ from typing import Optional
 from pydantic import TypeAdapter, ValidationError
 
 from web_lobster.core.schemas import SubGoal, TaskPlan
-from web_lobster.core.briefing import TaskBrief, parse_brief
+from web_lobster.core.briefing import TaskBrief, is_click_level, mentions_a_change, parse_brief
 from web_lobster.core.values import ExtractedValue, ValueSpec
 from web_lobster.verify.evidence import EvidenceCheck
 from web_lobster.verify.receipts import page_label
@@ -44,12 +44,19 @@ _GOAL_KEYS = ("goal", "description", "sub_goal", "subgoal", "task", "name")
 def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
     """Undo plan mistakes small models make despite the prompt.
 
-    - A sub-goal that only reads information, with no evidence, is dropped, and
-      the values it declared move to the sub-goal before it.
     - A "url" check that spells out a query string is dropped. Search and results
       URLs are where guesses go wrong (sites encode and order parameters their own
       way, or send a search straight to an article), and a check that can never
       pass makes its sub-goal impossible to finish.
+    - A sub-goal that only reads information is folded into the one before it,
+      which takes its values and its text and value checks. One with a url or
+      request check stays.
+    - Click-level steps (typing, pressing, clicking a button) are folded into the
+      outcome they lead to: "Click the search button" becomes the start of "...,
+      then click on the article", proven by that step's evidence. A click step's
+      own check fails once the page moves on, which stalled live runs. A step with
+      a url, request, or value check, values to read, or wording about a change
+      stays, and plan review asks the planner about it instead.
     """
     kept: list[SubGoal] = []
     for goal in sub_goals:
@@ -57,12 +64,51 @@ def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
         if len(checks) < len(goal.evidence):
             logger.warning("planner_query_url_check_dropped", sub_goal=goal.id)
             goal.evidence = checks
-        if kept and not goal.evidence and _READ_ONLY_GOAL.match(goal.goal):
-            names = {spec.name for spec in kept[-1].extract}
-            kept[-1].extract.extend(spec for spec in goal.extract if spec.name not in names)
-            logger.info("planner_read_only_sub_goal_dropped", sub_goal=goal.id)
+        if kept and _READ_ONLY_GOAL.match(goal.goal) and not any(
+            check.type in ("url", "request") for check in goal.evidence
+        ):
+            previous = kept[-1]
+            names = {spec.name for spec in previous.extract}
+            previous.extract.extend(spec for spec in goal.extract if spec.name not in names)
+            previous.evidence.extend(goal.evidence)
+            logger.info("planner_read_only_sub_goal_folded", sub_goal=goal.id)
             continue
         kept.append(goal)
+    return _fold_click_level_steps(kept)
+
+
+def _foldable(goal: SubGoal) -> bool:
+    return (
+        is_click_level(goal.goal)
+        and not goal.extract
+        and all(check.type == "text" for check in goal.evidence)
+        and not mentions_a_change(goal.goal)
+    )
+
+
+def _lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:]
+
+
+def _fold_click_level_steps(goals: list[SubGoal]) -> list[SubGoal]:
+    """Fold click-level steps forward into the next step, or back into the last one."""
+    if len(goals) < 2 or not any(_foldable(goal) for goal in goals):
+        return goals
+    kept: list[SubGoal] = []
+    carried: list[str] = []
+    for goal in goals:
+        if _foldable(goal):
+            carried.append(goal.goal)
+            continue
+        if carried:
+            goal.goal = ", then ".join([carried[0], *map(_lower_first, carried[1:]), _lower_first(goal.goal)])
+            carried = []
+        kept.append(goal)
+    if carried:
+        if not kept:
+            return goals  # every step is click-level, so there's no outcome to fold into
+        kept[-1].goal = ", then ".join([kept[-1].goal, *map(_lower_first, carried)])
+    logger.info("planner_click_level_steps_folded", folded=len(goals) - len(kept))
     return kept
 
 PLANNER_SYSTEM = """You are a web task planner for an autonomous browser agent.
