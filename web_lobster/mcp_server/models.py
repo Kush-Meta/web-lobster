@@ -130,7 +130,10 @@ class WebTaskResult(BaseModel):
     run_id: str
     done: bool = Field(description="Every sub-goal was completed.")
     verified: bool = Field(
-        description="Done, and every completed sub-goal was proven by evidence checks rather than judged by a model.",
+        description=(
+            "Done, every completed sub-goal was proven by evidence checks rather than judged by a model, "
+            "and every requested value was read and passed its checks."
+        ),
     )
     summary: str = Field(description="Written by web-lobster from counts; contains no page text.")
     values: dict[str, ValueOut] = Field(default_factory=dict)
@@ -163,6 +166,10 @@ class WebTaskResult(BaseModel):
     answers: dict[str, Scalar] = Field(default_factory=dict, description="Answers the run used, defaults included.")
     mandate_gaps: list[str] = Field(
         default_factory=list, description="What the task seemed to need beyond the mandate.",
+    )
+    missing_values: list[str] = Field(
+        default_factory=list,
+        description="Requested values that weren't read or failed their checks. Any of these means not verified.",
     )
 
 

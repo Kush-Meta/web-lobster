@@ -128,6 +128,31 @@ Mandate block counts include each page's own analytics and error reporting. MCP 
 
 [docs/live-testing.md](docs/live-testing.md) has every live run, what each one broke, and the fixes that followed.
 
+## Measuring it
+
+`web-lobster trials` runs live tasks again and again and scores them against known answers, so a change is judged by a success rate instead of one lucky run.
+
+```bash
+web-lobster trials trials/web.yaml -c configs/local-16gb.yaml -n 3
+web-lobster trials trials/web.yaml --task everest -n 5 -c configs/local-16gb.yaml -c configs/local-16gb-14b-planner.yaml --markdown results.md
+```
+
+A trial file lists tasks, each with a mandate, the values to read, and what they should be:
+
+```yaml
+tasks:
+  - id: everest
+    task: Use Wikipedia's search box to find the article about Mount Everest, then find its elevation in metres.
+    mandate: {origins: ["https://en.wikipedia.org"]}
+    start_url: https://en.wikipedia.org/wiki/Main_Page
+    values:
+      - {name: elevation_m, type: number, min: 8000, max: 9000}
+    expect:
+      elevation_m: {equals: 8848.86, tolerance: 0.5}
+```
+
+Every task runs under every config you pass. The report shows how often each was done, right, and verified, with median steps and time. Runs take the same path as an MCP call and never stop to ask questions, and they start from empty memory unless you pass `--memory shared`. [trials/web.yaml](trials/web.yaml) has three read-only tasks to start from.
+
 ## More features
 
 - **Hybrid perception**: annotated screenshots plus accessibility-tree extraction, or DOM-only mode for text models
@@ -183,6 +208,8 @@ A quarantined model reads the values, then code checks each against its type. Nu
 A replan sees only the planner's own sub-goals, attempt counts, mandate block counts, the current origin, and those values. Memory keeps the page-derived answer for you but never shows it to the planner, learnings are written from trusted inputs only, and records saved before this change show the planner just their task and outcome.
 
 Values come back on the result and in the run summary. Numbers use US separators (`1,209.50`); `1.209,50` is rejected rather than guessed.
+
+A value can also carry a shape that code enforces: `pattern` for text, which the whole text must match, and `min` and `max` for numbers. A value that fails its shape counts as not read, and over MCP a run with a missing value isn't verified.
 
 ## Thinking before acting
 
@@ -334,6 +361,10 @@ web_lobster/
 │   ├── agents.py            # Scripted planner, executor and validator
 │   ├── runner.py            # Runs scenarios under each defense setup
 │   └── report.py            # Text summary of a benchmark run
+├── trials/
+│   ├── spec.py              # Trial files: tasks, mandates, expected values
+│   ├── runner.py            # Runs each task repeatedly under each config
+│   └── report.py            # Done, right, and verified rates, with medians
 ├── mcp_server/
 │   ├── models.py            # Tool request and result shapes
 │   ├── service.py           # Runs web tasks and keeps run records, independent of MCP
@@ -353,6 +384,7 @@ web_lobster/
     └── retry.py             # Retry and backoff utilities
 
 configs/                     # Model configs: local-16gb, claude, default, and more
+trials/                      # Live tasks with known answers, for web-lobster trials
 integrations/                # OpenClaw and Claude Code plugin bundle
 docs/                        # MCP server guide, roadmap, design records
 examples/                    # Example scripts and a mandate

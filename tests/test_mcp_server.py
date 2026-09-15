@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,11 +22,12 @@ from web_lobster.bench.runner import script_for
 from web_lobster.bench.scenarios import BENCH_EMAIL, scenario_by_id
 from web_lobster.bench.sites import Site
 from web_lobster.core.config import MCPServerConfig, WebLobsterConfig
+from web_lobster.core.orchestrator import AgentResult
 from web_lobster.core.schemas import Action, ActionType, SubGoal, TaskPlan, ValidationResult
 from web_lobster.models.planner import BRIEF_SYSTEM, PLANNER_SYSTEM
 from web_lobster.core.values import ValueSpec, ValueType
 from web_lobster.mcp_server.agents import ServerUI, ValueRequestingPlanner
-from web_lobster.mcp_server.models import DataInput, MandateInput
+from web_lobster.mcp_server.models import DataInput, MandateInput, WebTaskRequest
 from web_lobster.mcp_server.server import build_server
 from web_lobster.mandate.enforcer import Violation, ViolationKind
 from web_lobster.mcp_server.service import (
@@ -343,3 +345,17 @@ async def test_stdio_command_serves_both_mcp_clients(tmp_path):
         assert '"valid": true' in await manager.call_tool("check_mandate", check)
     finally:
         await manager.stop()
+
+
+def test_a_missing_requested_value_means_not_verified(tmp_path):
+    receipt = SimpleNamespace(sub_goal_id=1, goal="Open the downloads page", achieved=True, basis="evidence",
+                              checks=[], writes=[], digest="abc")
+    agent = AgentResult(success=True, task="Find the version", receipts=[receipt])
+    request = WebTaskRequest(
+        task="Find the version", mandate=MandateInput(origins=[SHOP]),
+        values=[ValueSpec(name="version", type=ValueType.TEXT, pattern=r"3\.\d+\.\d+")],
+    )
+    result = WebTaskService(_config(), runs_dir=tmp_path)._result("0123456789ab", request, agent, 1.0)
+    assert result.done and not result.verified
+    assert result.missing_values == ["version"]
+    assert "1 requested value(s) weren't read or failed their checks: version." in result.summary

@@ -117,6 +117,9 @@ async def test_answers_reach_the_planner_every_executor_step_and_memory(sites, t
     assert record.goal_stats == [
         {"goal": "Look over the checkout page", "done": True, "basis": "model", "steps": 1},
     ]
+    assert record.plan == [
+        {"goal": "Look over the checkout page", "success_criteria": "Checkout is visible", "extract": [], "evidence": []},
+    ]
     experience = orchestrator.memory.format_for_prompt("Something else entirely", origins=[a.origin])
     assert f"[Same site: {a.origin}]" in experience
     assert "Look over the checkout page (1 step, judged by a model)" in experience

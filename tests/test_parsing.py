@@ -160,6 +160,30 @@ That should work!'''
         assert [g.goal for g in goals] == ["Type hello into the box", "Click the search button"]
 
 
+    def test_sub_goals_without_goal_text_are_dropped(self):
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Open the page"},
+            {"id": 2, "success_criteria": "Done"},
+            {"id": 3, "title": "Open the reports tab"},
+        ]))
+        assert [(g.id, g.goal) for g in goals] == [(1, "Open the page"), (3, "Open the reports tab")]
+
+    def test_a_reply_with_no_goal_text_at_all_is_rejected(self):
+        with pytest.raises(ValueError, match="without goal text"):
+            self._parse('[{"id": 1}, {"id": 2, "success_criteria": "Done"}]')
+
+    def test_search_steps_get_a_text_check_for_their_term(self):
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Open the Wikipedia home page"},
+            {"id": 2, "goal": "Search for 'Mount Everest'"},
+            {"id": 3, "goal": "Search the catalogue", "evidence": [{"type": "text", "contains": "results"}]},
+            {"id": 4, "goal": "Search for cheap flights"},
+        ]))
+        assert [[(c.type, c.contains) for c in g.evidence] for g in goals] == [
+            [], [("text", "Mount Everest")], [("text", "results")], [],
+        ]
+
+
 class TestExecutorParsing:
     """Test the executor's action response parsing."""
 

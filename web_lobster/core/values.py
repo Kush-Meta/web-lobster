@@ -24,6 +24,9 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 MAX_TEXT_LENGTH = 500
+MAX_PATTERN_LENGTH = 200
+# A group that repeats and contains a repeat, like (a+)+, can take exponential time to match.
+_NESTED_QUANTIFIER = re.compile(r"\([^()]*[+*][^()]*\)[+*{]")
 VALUE_REF_RE = re.compile(r"\{\{\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -46,11 +49,19 @@ class ValueType(str, Enum):
 
 
 class ValueSpec(BaseModel):
-    """A value the planner wants read off the page a sub-goal reaches."""
+    """A value the planner wants read off the page a sub-goal reaches.
+
+    pattern, min, and max are shape checks enforced in code: a text value must
+    match pattern in full, and a number must fall within min and max. A value
+    that fails them counts as not read, however sure the reader was.
+    """
     name: str
     type: ValueType
     description: str = ""
     choices: list[str] = Field(default_factory=list)
+    pattern: Optional[str] = Field(default=None, max_length=MAX_PATTERN_LENGTH)
+    min: Optional[float] = None
+    max: Optional[float] = None
 
     @field_validator("name")
     @classmethod
@@ -60,9 +71,23 @@ class ValueSpec(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _check_choices(self) -> ValueSpec:
+    def _check_shape(self) -> ValueSpec:
         if self.type == ValueType.CHOICE and not self.choices:
             raise ValueError(f"choice value {self.name!r} needs choices")
+        if self.pattern is not None:
+            if self.type != ValueType.TEXT:
+                raise ValueError(f"pattern only applies to text values, not {self.name!r}")
+            try:
+                re.compile(self.pattern)
+            except re.error as e:
+                raise ValueError(f"pattern for {self.name!r} isn't a valid regular expression: {e}") from None
+            if _NESTED_QUANTIFIER.search(self.pattern):
+                raise ValueError(f"pattern for {self.name!r} repeats a group that repeats, which can hang matching")
+        numeric = self.type in (ValueType.NUMBER, ValueType.INTEGER)
+        if (self.min is not None or self.max is not None) and not numeric:
+            raise ValueError(f"min and max only apply to number and integer values, not {self.name!r}")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"min is above max for {self.name!r}")
         return self
 
 
@@ -91,7 +116,7 @@ def coerce_value(spec: ValueSpec, raw: object) -> Optional[Scalar]:
 
     if spec.type in (ValueType.NUMBER, ValueType.INTEGER):
         number = _to_number(raw)
-        if number is None:
+        if number is None or not _within(spec, number):
             return None
         if spec.type == ValueType.INTEGER:
             return int(number) if number.is_integer() else None
@@ -121,8 +146,14 @@ def coerce_value(spec: ValueSpec, raw: object) -> Optional[Scalar]:
     # TEXT
     if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
         return None
-    text = str(raw).strip()
-    return text[:MAX_TEXT_LENGTH] or None
+    text = str(raw).strip()[:MAX_TEXT_LENGTH]
+    if not text or (spec.pattern and not re.fullmatch(spec.pattern, text)):
+        return None
+    return text
+
+
+def _within(spec: ValueSpec, number: float) -> bool:
+    return (spec.min is None or number >= spec.min) and (spec.max is None or number <= spec.max)
 
 
 def _to_number(raw: object) -> Optional[float]:

@@ -31,6 +31,9 @@ MEMORY_DIR = Path.home() / ".web_lobster" / "memories"
 MEMORY_FILE = MEMORY_DIR / "tasks.jsonl"
 # Runs of other tasks on the same sites to show the planner
 MAX_SITE_RECORDS = 2
+# How similar a past task must be for its plan to be offered for reuse
+REUSE_SIMILARITY = 0.5
+MAX_REUSE_PLAN_CHARS = 4000
 
 
 @dataclass
@@ -61,6 +64,9 @@ class TaskRecord:
     # Per sub-goal: goal text, done, how that was decided ("evidence"/"model"), steps taken.
     # Counts and planner-written text only, so it's safe to show a future planner.
     goal_stats: list[dict] = field(default_factory=list)
+    # A successful run's completed sub-goals as the planner wrote them (goal, criteria,
+    # values, evidence), so a later run on the same site can reuse the plan.
+    plan: list[dict] = field(default_factory=list)
 
 
 class TaskMemory:
@@ -124,39 +130,74 @@ class TaskMemory:
         return [(s, r) for s, r in scored if s >= min_similarity][:top_k]
 
     def format_for_prompt(
-        self, task: str, top_k: int = 3, origins: Optional[list[str]] = None,
+        self,
+        task: str,
+        top_k: int = 3,
+        origins: Optional[list[str]] = None,
+        reuse_plans: bool = False,
     ) -> Optional[str]:
         """Format past experience as a prompt block for the planner.
 
         Similar tasks come first. With origins (trusted: the mandate's sites and
         the start page), recent trusted runs of other tasks on those sites follow,
-        so what the agent learned about a site carries over. Returns None if
-        nothing is relevant. Answers are never included.
+        so what the agent learned about a site carries over. With reuse_plans, a
+        plan that worked for a similar task on one of those sites leads the block,
+        in full. Returns None if nothing is relevant. Answers are never included.
         """
-        similar = self.find_similar(task, top_k=top_k)
-        shown = {id(rec) for _, rec in similar}
+        self._ensure_loaded()
         wanted = set(origins or [])
+        reusable = self._plan_to_reuse(task, wanted) if reuse_plans and wanted else None
+        similar = [(score, rec) for score, rec in self.find_similar(task, top_k=top_k) if rec is not reusable]
+        shown = {id(rec) for _, rec in similar} | ({id(reusable)} if reusable else set())
         same_site = [
             rec for rec in reversed(self._records)
             if rec.trusted and id(rec) not in shown and wanted & set(rec.origins)
         ][:MAX_SITE_RECORDS]
-        if not similar and not same_site:
-            return None
 
-        lines = ["RELEVANT PAST EXPERIENCE (use as guidance, adapt as needed):"]
-        for i, (score, rec) in enumerate(similar, 1):
-            lines.append(f"\n[Memory {i}] (similarity: {score:.0%}) {self._outcome(rec)}")
-            lines.append(f"Task: {rec.task}")
-            if not rec.trusted:
-                lines.append("(Plan details withheld: recorded before page content was kept out of planning.)")
+        blocks = []
+        if reusable:
+            blocks.append("\n".join(self._reuse_lines(reusable)))
+        if similar or same_site:
+            lines = ["RELEVANT PAST EXPERIENCE (use as guidance, adapt as needed):"]
+            for i, (score, rec) in enumerate(similar, 1):
+                lines.append(f"\n[Memory {i}] (similarity: {score:.0%}) {self._outcome(rec)}")
+                lines.append(f"Task: {rec.task}")
+                if not rec.trusted:
+                    lines.append("(Plan details withheld: recorded before page content was kept out of planning.)")
+                    continue
+                lines.extend(self._plan_lines(rec))
+            for rec in same_site:
+                site = sorted(wanted & set(rec.origins))[0]
+                lines.append(f"\n[Same site: {site}] {self._outcome(rec)}")
+                lines.append(f"Task: {rec.task}")
+                lines.extend(self._plan_lines(rec))
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks) or None
+
+    def _plan_to_reuse(self, task: str, origins: set[str]) -> Optional[TaskRecord]:
+        """The most similar trusted, successful run on one of these sites that saved its plan."""
+        task_tokens = self._tokenize(task)
+        best: Optional[tuple[float, TaskRecord]] = None
+        for rec in self._records:
+            if not (rec.trusted and rec.success and rec.plan and origins & set(rec.origins)):
                 continue
-            lines.extend(self._plan_lines(rec))
-        for rec in same_site:
-            site = sorted(wanted & set(rec.origins))[0]
-            lines.append(f"\n[Same site: {site}] {self._outcome(rec)}")
-            lines.append(f"Task: {rec.task}")
-            lines.extend(self._plan_lines(rec))
-        return "\n".join(lines)
+            score = self._jaccard(task_tokens, self._tokenize(rec.task))
+            if score >= REUSE_SIMILARITY and (best is None or (score, rec.timestamp) > (best[0], best[1].timestamp)):
+                best = (score, rec)
+        return best[1] if best else None
+
+    @staticmethod
+    def _reuse_lines(rec: TaskRecord) -> list[str]:
+        done = [stat for stat in rec.goal_stats if stat.get("done")]
+        proven = sum(stat.get("basis") == "evidence" for stat in done)
+        plan = json.dumps(rec.plan, indent=1)
+        return [
+            "A PLAN THAT WORKED (a past run of a similar task on the same site: reuse it if the task is "
+            "the same, adapt it if not):",
+            f"Task: {rec.task}",
+            f"It took {rec.steps_taken} steps, and {proven} of {len(done)} completed sub-goals were proven by evidence.",
+            plan[:MAX_REUSE_PLAN_CHARS],
+        ]
 
     @staticmethod
     def _outcome(rec: TaskRecord) -> str:

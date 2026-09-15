@@ -1,0 +1,53 @@
+# Web Lobster — local models on a 16 GB Apple Silicon Mac, reusing plans that worked
+#
+# One small text model for every role, so only one model sits in memory at a
+# time, and DOM mode so the page reaches it as text instead of screenshots.
+#
+#   ollama pull qwen2.5-coder:7b
+#   python -m web_lobster run -c configs/local-16gb.yaml --mandate my_mandate.yaml
+
+planner:
+  backend: ollama
+  model: "qwen2.5-coder:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.2
+  max_tokens: 2048
+  timeout: 180.0
+  vision: false
+  context_window: 16384
+
+executor:
+  backend: ollama
+  model: "qwen2.5-coder:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.0
+  max_tokens: 256
+  timeout: 120.0
+  vision: false
+  context_window: 16384
+
+validator:
+  backend: ollama
+  model: "qwen2.5-coder:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 256
+  timeout: 120.0
+  vision: false
+  context_window: 16384
+
+browser:
+  headless: true
+  viewport_width: 1280
+  viewport_height: 900
+  default_timeout: 20.0
+  screenshot_quality: 60
+
+agent:
+  max_steps: 40
+  max_replans: 2
+  validation_confidence_threshold: 0.6
+  screenshot_mode: "dom_only"
+  dom_mode: true
+  max_seconds: 900
+  reuse_plans: true      # offer the planner a plan that worked for a similar task on the same site

@@ -21,7 +21,7 @@ from pydantic import TypeAdapter, ValidationError
 from web_lobster.core.schemas import SubGoal, TaskPlan
 from web_lobster.core.briefing import TaskBrief, is_click_level, mentions_a_change, parse_brief
 from web_lobster.core.values import ExtractedValue, ValueSpec
-from web_lobster.verify.evidence import EvidenceCheck
+from web_lobster.verify.evidence import EvidenceCheck, TextCheck
 from web_lobster.verify.receipts import page_label
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
@@ -38,7 +38,9 @@ _READ_ONLY_GOAL = re.compile(
     re.IGNORECASE,
 )
 # Keys models use for the goal text when they don't use "goal".
-_GOAL_KEYS = ("goal", "description", "sub_goal", "subgoal", "task", "name")
+_GOAL_KEYS = ("goal", "description", "sub_goal", "subgoal", "task", "name", "title", "objective", "action", "step")
+# A search step and its quoted term: "Search for 'Mount Everest'".
+_SEARCH_GOAL = re.compile(r"""^\s*search\b[^'"‘“]*['"‘“](?P<term>[^'"’”]{2,80})['"’”]""", re.IGNORECASE)
 
 
 def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
@@ -57,6 +59,8 @@ def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
       own check fails once the page moves on, which stalled live runs. A step with
       a url, request, or value check, values to read, or wording about a change
       stays, and plan review asks the planner about it instead.
+    - A search step with no evidence and a quoted term ("Search for 'Mount Everest'")
+      gets a text check for that term: a search's outcome is a page that shows it.
     """
     kept: list[SubGoal] = []
     for goal in sub_goals:
@@ -64,6 +68,10 @@ def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
         if len(checks) < len(goal.evidence):
             logger.warning("planner_query_url_check_dropped", sub_goal=goal.id)
             goal.evidence = checks
+        if not goal.evidence:
+            search = _SEARCH_GOAL.match(goal.goal)
+            if search:
+                goal.evidence = [TextCheck(contains=search.group("term").strip())]
         if kept and _READ_ONLY_GOAL.match(goal.goal) and not any(
             check.type in ("url", "request") for check in goal.evidence
         ):
@@ -138,7 +146,8 @@ CONTEXT: the prompt may start with NOW (resolve dates like "next Friday" against
 the MANDATE (the sites, data, and changes the user approved; the browser blocks
 everything else, so plan inside it, and type granted data as {{name}}), VALUES THE
 USER WANTS BACK, USER NOTES, answers GIVEN BY THE USER UP FRONT, your own TASK BRIEF,
-USER ANSWERS, and past experience.
+USER ANSWERS, past experience, and sometimes A PLAN THAT WORKED for a similar task on
+the same site: reuse it when the task is the same, and adapt it when it isn't.
 The user's answers and notes win over your assumptions.
 
 VALUES: you never see web pages yourself. If a later sub-goal depends on something
@@ -146,6 +155,9 @@ a page shows (a price, a date, a count, yes/no), add "extract" to the sub-goal t
 reaches that page, for example:
   "extract": [{"name": "cheapest_price", "type": "number", "description": "lowest fare in USD"}]
 Types: number, integer, boolean, date (YYYY-MM-DD), choice (add "choices": [...]), text.
+When you know a value's shape, add "pattern" (a regular expression the whole text must
+match) or "min" and "max" (numbers), so a misread is rejected rather than trusted:
+  {"name": "version", "type": "text", "pattern": "[0-9]+[.][0-9]+[.][0-9]+"}
 Later sub-goals can use a value as {{$name}}. Text values go to the browser agent
 but are never shown to you.
 
@@ -424,18 +436,27 @@ Focus on: what navigation steps worked, what failed, any tricky elements."""
             # Model may return plain strings instead of dicts
             if isinstance(item, str):
                 item = {"goal": item}
+            if not isinstance(item, dict):
+                continue
             goal = next(
                 (item[key].strip() for key in _GOAL_KEYS
                  if isinstance(item.get(key), str) and item[key].strip()),
-                f"Step {i + 1}",
+                None,
             )
+            if goal is None:
+                # A sub-goal with no goal text would run as a placeholder the executor can't act on.
+                logger.warning("planner_goalless_sub_goal_dropped", index=i)
+                continue
+            criteria = item.get("success_criteria")
             sub_goals.append(SubGoal(
                 id=item.get("id", i + 1),
                 goal=goal,
-                success_criteria=item.get("success_criteria", goal),
+                success_criteria=criteria.strip() if isinstance(criteria, str) and criteria.strip() else goal,
                 extract=self._parse_value_specs(item.get("extract")),
                 evidence=self._parse_evidence(item.get("evidence")),
             ))
+        if raw and not sub_goals:
+            raise ValueError("Planner returned sub-goals without goal text")
         return tidy_sub_goals(sub_goals)
 
     def _parse_value_specs(self, raw: object) -> list[ValueSpec]:

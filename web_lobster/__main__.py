@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +41,9 @@ from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.core.values import ValueType
 from web_lobster.mandate.schema import Mandate
+from web_lobster.trials.report import render as render_trials, render_markdown as render_trials_markdown
+from web_lobster.trials.runner import run_trials
+from web_lobster.trials.spec import TrialFile
 from web_lobster.verify.receipts import write_receipts
 from web_lobster.utils.logging import print_banner, set_log_level, get_logger
 
@@ -297,6 +302,87 @@ def bench(mode, scenario_ids, defense_names, config, json_path, headed, verbose)
     if json_path:
         Path(json_path).write_text(report.model_dump_json(indent=2))
         click.echo(f"  Results written to {json_path}\n")
+
+
+@cli.command()
+@click.argument("trial_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--config", "-c", "config_paths", multiple=True, type=click.Path(exists=True, dir_okay=False),
+    help="Model config to run (repeat to compare configs)",
+)
+@click.option("--runs", "-n", default=3, show_default=True, type=click.IntRange(1, 50), help="Runs per task and config")
+@click.option("--task", "task_ids", multiple=True, help="Run only this task id (repeatable)")
+@click.option(
+    "--memory", type=click.Choice(["fresh", "shared"]), default="fresh", show_default=True,
+    help="fresh: every run starts with empty memory. shared: runs of a task under one config share memory",
+)
+@click.option(
+    "--runs-dir", type=click.Path(file_okay=False), default=None,
+    help="Where run records go (default: a new folder under ~/.web_lobster/trials)",
+)
+@click.option("--json", "json_path", type=click.Path(dir_okay=False), help="Write every outcome as JSON")
+@click.option("--markdown", "markdown_path", type=click.Path(dir_okay=False), help="Write the summary table as Markdown")
+@click.option("--headed", is_flag=True, help="Show the browser")
+@click.option("--verbose", "-v", is_flag=True, help="Show agent logs")
+def trials(trial_file, config_paths, runs, task_ids, memory, runs_dir, json_path, markdown_path, headed, verbose):
+    """Run live web tasks again and again against their known answers, and compare configs.
+
+    A trial file lists tasks, each with a mandate, the values to read, and what
+    they should be. Every task runs under every config the given number of
+    times, and the report shows how often each was done, right, and verified,
+    with median steps and time. Runs never stop to ask questions.
+
+    This visits live sites and makes real model calls.
+
+    Examples:
+
+        web-lobster trials trials/web.yaml -c configs/local-16gb.yaml
+
+        web-lobster trials trials/web.yaml --task everest -n 5 -c configs/local-16gb.yaml -c configs/local-16gb-14b-planner.yaml --markdown results.md
+    """
+    print_banner()
+    set_log_level("DEBUG" if verbose else "SILENT")
+
+    try:
+        trial_file = TrialFile.from_yaml(trial_file)
+    except Exception as e:
+        raise click.UsageError(f"Can't read the trial file: {e}")
+    known = {task.id for task in trial_file.tasks}
+    unknown = sorted(set(task_ids) - known)
+    if unknown:
+        raise click.UsageError(f"Unknown task id(s): {', '.join(unknown)}. The file has: {', '.join(sorted(known))}")
+    tasks = [task for task in trial_file.tasks if not task_ids or task.id in task_ids]
+
+    configs: list[tuple[str, WebLobsterConfig]] = []
+    for path in config_paths or [None]:
+        cfg = _load_config(path)
+        cfg.browser.headless = not headed
+        label = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(path).stem) if path else "default"
+        while label in {existing for existing, _ in configs}:
+            label += "_"
+        configs.append((label, cfg))
+
+    folder = Path(runs_dir) if runs_dir else Path.home() / ".web_lobster" / "trials" / time.strftime("%Y%m%d-%H%M%S")
+    click.echo(
+        f"  {len(tasks) * len(configs) * runs} live run(s): {len(tasks)} task(s) x {len(configs)} config(s) "
+        f"x {runs} run(s). This visits live sites and makes real model calls.\n"
+    )
+
+    def progress(outcome):
+        click.echo(
+            f"  run {outcome.run}  {outcome.task:<16} {outcome.config:<30} {outcome.verdict()}  "
+            f"({outcome.steps} steps, {outcome.seconds:.0f}s)"
+        )
+
+    report = asyncio.run(run_trials(tasks, configs, runs, runs_dir=folder, memory=memory, on_outcome=progress))
+    click.echo(render_trials(report))
+    click.echo(f"  Run records: {folder}\n")
+    if json_path:
+        Path(json_path).write_text(report.model_dump_json(indent=2))
+        click.echo(f"  Outcomes written to {json_path}\n")
+    if markdown_path:
+        Path(markdown_path).write_text(render_trials_markdown(report))
+        click.echo(f"  Summary written to {markdown_path}\n")
 
 
 @cli.command("mcp")

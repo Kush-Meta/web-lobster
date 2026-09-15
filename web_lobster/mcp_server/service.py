@@ -301,7 +301,11 @@ class WebTaskService:
                 site=value.origin, withheld=withheld,
             )
         completed = [r for r in agent.receipts if r.achieved]
-        verified = agent.success and bool(completed) and all(r.basis == "evidence" for r in completed)
+        # Requested values that weren't read, or failed their type and shape checks
+        missing = [] if agent.needs_input else [spec.name for spec in request.values if spec.name not in agent.values]
+        verified = (
+            agent.success and bool(completed) and all(r.basis == "evidence" for r in completed) and not missing
+        )
         blocked = blocked_actions(agent.violations)
 
         return WebTaskResult(
@@ -310,7 +314,7 @@ class WebTaskService:
             verified=verified,
             summary=self._summary(
                 agent.success, verified, receipts, blocked, agent.error,
-                needs_input=agent.needs_input, problems=agent.problems,
+                needs_input=agent.needs_input, problems=agent.problems, missing=missing,
             ),
             values=values,
             answer=agent.answer if request.include_page_text else None,
@@ -326,13 +330,14 @@ class WebTaskService:
             questions=agent.questions,
             answers=agent.answers,
             mandate_gaps=agent.gaps,
+            missing_values=missing,
         )
 
     @staticmethod
     def _summary(
         done: bool, verified: bool, receipts: list[ReceiptSummary],
         blocked: list[BlockedAction], error: Optional[str],
-        needs_input: bool = False, problems: Sequence[str] = (),
+        needs_input: bool = False, problems: Sequence[str] = (), missing: Sequence[str] = (),
     ) -> str:
         if needs_input:
             parts = [
@@ -347,9 +352,16 @@ class WebTaskService:
             parts = [f"Done and verified: all {completed} completed sub-goal(s) were proven by evidence checks."]
         elif done:
             judged = sum(r.done and r.verified_by == "model" for r in receipts)
-            parts = [f"Done, not fully verified: {judged} of {completed} completed sub-goal(s) were judged by a model."]
+            parts = [
+                f"Done, not fully verified: {judged} of {completed} completed sub-goal(s) were judged by a model."
+                if judged else "Done, but not verified."
+            ]
         else:
             parts = [f"Not done: {completed} sub-goal(s) completed, {len(receipts) - completed} did not."]
+        if done and missing:
+            parts.append(
+                f"{len(missing)} requested value(s) weren't read or failed their checks: {', '.join(missing)}."
+            )
         if blocked:
             total = sum(b.count for b in blocked)
             background = sum(b.count for b in blocked if b.background)

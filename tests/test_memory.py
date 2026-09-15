@@ -56,3 +56,30 @@ def test_trusted_flag_round_trips(tmp_path):
     [(_, loaded)] = TaskMemory(path).find_similar(TASK)
     assert loaded.trusted is True
     assert loaded.answer == INJECTED  # still kept for the user
+
+
+WIKI = "https://en.wikipedia.org"
+PLAN = [{
+    "goal": "Search for 'Mount Everest', then open the article", "success_criteria": "The article is open",
+    "extract": [], "evidence": [{"type": "url", "pattern": "https://en.wikipedia.org/wiki/Mount_Everest"}],
+}]
+STATS = [{"goal": PLAN[0]["goal"], "done": True, "basis": "evidence", "steps": 9}]
+
+
+def test_a_plan_that_worked_is_offered_for_a_similar_task_on_the_same_site(tmp_path):
+    memory = TaskMemory(tmp_path / "tasks.jsonl")
+    memory.save(_record(plan=PLAN, origins=[WIKI], goal_stats=STATS))
+
+    context = memory.format_for_prompt(TASK, origins=[WIKI], reuse_plans=True)
+    assert context.startswith("A PLAN THAT WORKED")
+    assert "1 of 1 completed sub-goals were proven by evidence" in context
+    assert "https://en.wikipedia.org/wiki/Mount_Everest" in context
+    assert "Evil Air" not in context
+
+    # Not offered unless asked for, and never for another site or a failed run.
+    assert "A PLAN THAT WORKED" not in memory.format_for_prompt(TASK, origins=[WIKI])
+    other_site = memory.format_for_prompt(TASK, origins=["https://www.python.org"], reuse_plans=True)
+    assert "A PLAN THAT WORKED" not in other_site
+    failed = TaskMemory(tmp_path / "failed.jsonl")
+    failed.save(_record(success=False, plan=PLAN, origins=[WIKI], goal_stats=STATS))
+    assert "A PLAN THAT WORKED" not in failed.format_for_prompt(TASK, origins=[WIKI], reuse_plans=True)

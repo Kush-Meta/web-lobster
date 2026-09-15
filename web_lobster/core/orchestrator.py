@@ -221,7 +221,9 @@ class Orchestrator:
         origins = [origin_of(start_url)]
         if self.enforcer:
             origins += origin_strings(self.enforcer.mandate.origins)
-        memory_context = self.memory.format_for_prompt(task, origins=origins)
+        memory_context = self.memory.format_for_prompt(
+            task, origins=origins, reuse_plans=self.config.agent.reuse_plans,
+        )
         memory_hits = len(self.memory.find_similar(task)) if memory_context else 0
         if memory_context:
             logger.info("memory_context", hits=memory_hits)
@@ -1145,6 +1147,10 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             trusted=True,
             origins=sorted(self._visited_origins),
             goal_stats=[self._goal_stat(sg) for sg in plan.sub_goals],
+            plan=[
+                sg.model_dump(mode="json", include={"goal", "success_criteria", "extract", "evidence"})
+                for sg in plan.sub_goals if sg.status == SubGoalStatus.COMPLETED
+            ] if plan.is_complete else [],
         )
         self.memory.save(record)
 

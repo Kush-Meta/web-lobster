@@ -145,7 +145,7 @@ Step by step, with the code that does it:
 | `core/briefing.py` | `TaskBrief`, `Question`, `PlanningContext` (the only way context reaches the planner), mandate gaps, answer resolution, plan review |
 | `models/planner.py` | Brief, plan, revise, replan, and learnings prompts. Tidies plans small models get wrong |
 | `core/values.py` | `ValueSpec` and `ExtractedValue`: the typed channel from pages back to the planner |
-| `memory/task_memory.py` | Episodic memory. Answers are kept for the user and never shown to the planner. Records carry planner-written sub-goals, per-goal step counts, and visited origins |
+| `memory/task_memory.py` | Episodic memory. Answers are kept for the user and never shown to the planner. Records carry planner-written sub-goals, per-goal step counts, visited origins, and, for runs that succeeded, the plan itself, which can be offered for reuse on the same site |
 
 ### The quarantined side
 
@@ -190,6 +190,7 @@ Each role (planner, executor, validator) picks its own backend in config. The ex
 | Module | Role |
 |---|---|
 | `bench/` | Seven trap sites that log what they receive, scripted hijacked and honest models, five defense setups, and scoring from server logs |
+| `trials/` | Live tasks with known answers, run again and again under one or more configs through the MCP service path, and scored in code: done, right, and verified rates, with median steps and time |
 
 ## Trust boundaries
 
@@ -242,7 +243,7 @@ All inter-component data is Pydantic, in `core/schemas.py` unless noted.
 | `Observation` | URL, title, interactive elements, accessibility tree, DOM summary, page text, screenshots, login flag |
 | `SubGoal` / `TaskPlan` | Goal, success criteria, status, attempts, `extract` value specs, and `evidence` checks |
 | `TaskBrief` / `Question` / `PlanningContext` (`core/briefing.py`) | The brief, typed questions with defaults, and everything the planner may know |
-| `ValueSpec` / `ExtractedValue` (`core/values.py`) | A value to read, and the type-checked result with its origin |
+| `ValueSpec` / `ExtractedValue` (`core/values.py`) | A value to read, with an optional shape (`pattern`, `min`, `max`) enforced in code, and the checked result with its origin |
 | `Mandate` / `DataGrant` / `WriteRule` (`mandate/schema.py`) | The approved scope |
 | `Violation` (`mandate/enforcer.py`) | A blocked request: kind, URL, detail, resource type, main-frame flag |
 | `EvidenceCheck` (`verify/evidence.py`) | `url`, `request`, `text`, or `value` checks, and their results |
@@ -255,6 +256,7 @@ All inter-component data is Pydantic, in `core/schemas.py` unless noted.
 
 - `web-lobster run TASK`: `-c` config, `-m` mandate, `-u` start URL, `--receipts`, `--notes`, `--answer ID=VALUE`, `--assume`, `--no-brief`, `--max-steps`, `--dry-run`.
 - `web-lobster bench`: `--mode scripted|live`, `--scenario`, `--defenses`.
+- `web-lobster trials FILE`: `-c` (repeat to compare configs), `-n` runs, `--task`, `--memory fresh|shared`, `--json`, `--markdown`.
 - `web-lobster mcp`: `--transport stdio|streamable-http`, `--runs-dir`, `--approve-confirmations`.
 - `web-lobster ui`.
 
@@ -281,7 +283,7 @@ The details are in [mcp-server.md](mcp-server.md).
 | `planner`, `executor`, `validator` | Backend, model, temperature, token and context limits, vision on or off |
 | `browser` | Headless, viewport, timeouts |
 | `safety` | Dry run, confirmation keywords, URL allow and block lists, actions per sub-goal, ensemble voting |
-| `agent` | Step and replan budgets, validation threshold, DOM mode, wall-clock limit, evidence wait, and, for thinking first, `briefing`, `questions`, `plan_review`, `max_sub_goals`, `notes_file` |
+| `agent` | Step and replan budgets, validation threshold, DOM mode, wall-clock limit, evidence wait, and, for thinking first, `briefing`, `questions`, `plan_review`, `max_sub_goals`, `notes_file`, `reuse_plans` |
 | `mcp_servers` | MCP tools the agent itself may call. These are turned off under a mandate |
 
 ## Extending it

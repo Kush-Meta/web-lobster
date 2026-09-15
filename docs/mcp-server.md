@@ -67,7 +67,7 @@ Runs a task in a real browser under a mandate. Annotated as destructive and open
 | `mandate.allow_any_write` | bool | `false` | Allow any change on the allowed sites instead of listing writes |
 | `mandate.expires_in_minutes` | number | `30` | Everything stops after this (maximum 240) |
 | `start_url` | string | first non-wildcard origin | Must be on an allowed site |
-| `values` | `{name, type, description?, choices?}`[] | `[]` | Typed values to read from the final page: number, integer, boolean, date, choice, text |
+| `values` | `{name, type, description?, choices?, pattern?, min?, max?}`[] | `[]` | Typed values to read from the final page: number, integer, boolean, date, choice, text. `pattern` (text) must match the whole value, and `min` and `max` bound numbers; a value that fails them counts as not read |
 | `include_page_text` | bool | `false` | Also return the page-derived answer and text values |
 | `max_steps` | int | config | Cap on browser actions |
 | `notes` | string | none | The user's standing preferences or context, followed as the user's instructions |
@@ -85,7 +85,7 @@ Result:
 |---|---|
 | `run_id` | For `get_run` and `verify_receipts` |
 | `done` | Every sub-goal was completed |
-| `verified` | Done, and every completed sub-goal was proven by evidence checks rather than judged by a model |
+| `verified` | Done, every completed sub-goal was proven by evidence checks rather than judged by a model, and every requested value was read and passed its checks |
 | `summary` | Written by web-lobster from counts; contains no page text |
 | `values` | Requested values that passed their type checks. Text values are `withheld` unless `include_page_text` |
 | `answer` | Page-derived answer; `null` unless `include_page_text` |
@@ -98,6 +98,7 @@ Result:
 | `questions` | Questions still needing an answer |
 | `answers` | Answers the run used, defaults included |
 | `mandate_gaps` | What the task seemed to need beyond the mandate |
+| `missing_values` | Requested values that weren't read or failed their checks. Any of these means not verified |
 
 ### `brief_task`
 

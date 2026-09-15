@@ -1,0 +1,55 @@
+# Web Lobster — a 14B planner with a 7B executor, on a 16 GB Apple Silicon Mac
+#
+# The planner makes a handful of calls per task (brief, plan, a revision, a
+# replan), so a bigger model there costs little per step. The 9 GB 14B model and
+# the 4.7 GB 7B model don't both stay loaded next to a browser in 16 GB, so
+# Ollama swaps them between planner and executor calls; `web-lobster trials`
+# measures what that costs.
+#
+#   ollama pull qwen2.5-coder:14b
+#   ollama pull qwen2.5-coder:7b
+
+planner:
+  backend: ollama
+  model: "qwen2.5-coder:14b"
+  base_url: "http://localhost:11434"
+  temperature: 0.2
+  max_tokens: 2048
+  timeout: 300.0          # room to load the 14B model when Ollama has swapped it out
+  vision: false
+  context_window: 8192    # planner prompts are a few thousand tokens; a smaller cache saves memory
+
+executor:
+  backend: ollama
+  model: "qwen2.5-coder:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.0
+  max_tokens: 256
+  timeout: 120.0
+  vision: false
+  context_window: 16384
+
+validator:
+  backend: ollama
+  model: "qwen2.5-coder:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 256
+  timeout: 120.0
+  vision: false
+  context_window: 16384
+
+browser:
+  headless: true
+  viewport_width: 1280
+  viewport_height: 900
+  default_timeout: 20.0
+  screenshot_quality: 60
+
+agent:
+  max_steps: 40
+  max_replans: 2
+  validation_confidence_threshold: 0.6
+  screenshot_mode: "dom_only"
+  dom_mode: true
+  max_seconds: 900

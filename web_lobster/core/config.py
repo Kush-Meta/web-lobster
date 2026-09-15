@@ -76,6 +76,7 @@ class AgentConfig(BaseModel):
     plan_review: bool = True         # check the plan against the mandate and let the planner fix it once
     max_sub_goals: int = 6           # plan review asks for merging above this
     notes_file: Optional[str] = None # standing notes for the planner, e.g. ~/.web_lobster/notes.md
+    reuse_plans: bool = False        # offer the planner a plan that worked for a similar task on the same site
 
 
 class WebLobsterConfig(BaseModel):

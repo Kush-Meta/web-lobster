@@ -113,7 +113,7 @@ class Extractor:
                 else _HINTS[spec.type]
             )
             description = f" — {spec.description}" if spec.description else ""
-            lines.append(f'- "{spec.name}": {hint}{description}')
+            lines.append(f'- "{spec.name}": {hint}{_shape_hint(spec)}{description}')
 
         return f"""VALUES TO READ:
 {chr(10).join(lines)}
@@ -125,6 +125,19 @@ PAGE TEXT:
 {page[:PAGE_TEXT_LIMIT]}
 
 Respond with ONLY a JSON object mapping each value name to its value, or null."""
+
+
+def _shape_hint(spec: ValueSpec) -> str:
+    """The shape a value must have, so the reader looks for the right thing."""
+    if spec.pattern:
+        return f", matching the regular expression {spec.pattern}"
+    if spec.min is not None and spec.max is not None:
+        return f", between {spec.min:g} and {spec.max:g}"
+    if spec.min is not None:
+        return f", at least {spec.min:g}"
+    if spec.max is not None:
+        return f", at most {spec.max:g}"
+    return ""
 
 
 def _report_tool(specs: list[ValueSpec]) -> dict:

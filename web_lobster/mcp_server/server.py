@@ -61,7 +61,9 @@ def build_server(service: WebTaskService) -> MCPServer:
         values: Annotated[Optional[list[ValueSpec]], Field(
             description=(
                 "Typed values to read from the final page, e.g. [{'name': 'total', 'type': 'number'}]. "
-                "Types: number, integer, boolean, date, choice (with choices), text."
+                "Types: number, integer, boolean, date, choice (with choices), text. Optional checks: "
+                "'pattern' (a regular expression a text value must fully match) and 'min'/'max' (numbers); "
+                "a value that fails them counts as not read."
             ),
         )] = None,
         include_page_text: Annotated[bool, Field(
