@@ -431,6 +431,10 @@ button{cursor:pointer}
 .modal-code{font-family:var(--mono);font-size:0.8rem;color:var(--coral);background:var(--bg0);padding:10px;border-radius:7px;margin:10px 0;border:1px solid var(--border)}
 .modal-hint{font-size:0.74rem;color:var(--t2);margin-bottom:14px}
 .modal-btns{display:flex;gap:8px}
+.q-item{margin:12px 0}
+.q-text{font-size:0.85rem;color:var(--t1);line-height:1.5}
+.q-why{font-size:0.74rem;color:var(--t2);margin:2px 0 6px}
+.q-input{width:100%;box-sizing:border-box;background:var(--bg0);border:1px solid var(--border);color:var(--t1);border-radius:6px;padding:7px 9px;font:inherit;font-size:0.82rem}
 .m-btn{flex:1;padding:9px;border-radius:8px;font-weight:600;font-size:0.83rem;transition:all 0.15s;border:1px solid transparent}
 .m-btn-ok{background:linear-gradient(135deg,var(--coral),#c85030);color:#fff}
 .m-btn-no{background:var(--red-d);color:var(--red);border-color:rgba(232,85,85,0.3)}
@@ -720,6 +724,20 @@ button{cursor:pointer}
   </div>
 </div>
 
+<!-- ═══════════════ QUESTIONS MODAL ═══════════ -->
+<div class="modal-bg" id="questionsModal">
+  <div class="modal-box" style="max-width:480px">
+    <div class="modal-title">🧠 Before I start</div>
+    <div class="modal-body" id="questionsGoal"></div>
+    <div id="questionsList"></div>
+    <div class="modal-hint">Answers shape the plan. Leave one blank to let the agent use its default or best guess.</div>
+    <div class="modal-btns">
+      <button class="m-btn m-btn-no" onclick="submitAnswers(true)">Skip</button>
+      <button class="m-btn m-btn-ok" onclick="submitAnswers(false)">Start</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════ LOGIN MODAL ═══════════════ -->
 <div class="modal-bg" id="loginModal" style="display:none">
   <div class="modal-box" style="max-width:420px">
@@ -801,6 +819,14 @@ function handleEvent({type,data}){
       stopTimer(); showIdleCtrl(); setProgress(100);
       showAnswer(data); break;
     case 'confirm_request': showConfirm(data); break;
+    case 'brief':
+      if(data?.goal) logEvent(`🧠 ${data.goal}`);
+      (data?.assumptions||[]).forEach(a=>logEvent(`   assuming ${a}`));
+      (data?.gaps||[]).forEach(g=>logEvent(`⚠ Mandate: ${g}`));
+      break;
+    case 'plan_review': (data?.issues||[]).forEach(i=>logEvent(`✎ Plan review: ${i}`)); break;
+    case 'questions_request': showQuestions(data); break;
+    case 'questions_timeout': $('questionsModal').classList.remove('show'); logEvent('⏰ No answers, so using defaults'); break;
     case 'safety_flag': logEvent(`⚠ ${data.reason}`); break;
     case 'login_required':
       setPhase('paused');
@@ -1210,6 +1236,41 @@ function showConfirm(d){
 async function resolveConfirm(ok){
   $('confirmModal').classList.remove('show');
   await fetch('/api/agent/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved:ok})});
+}
+
+// ── Questions modal ──────────────────────────
+let pendingQuestions=[];
+const escAttr=s=>esc(s).replace(/"/g,'&quot;');
+function showQuestions(d){
+  pendingQuestions=d.questions||[];
+  $('questionsGoal').textContent=d.goal||'';
+  $('questionsList').innerHTML=pendingQuestions.map((q,i)=>{
+    const id=`qa_${i}`, def=q.default;
+    let input;
+    if(q.type==='boolean'){
+      input=`<select id="${id}" class="q-input"><option value="">No answer</option>`+
+        `<option value="true"${def===true?' selected':''}>Yes</option><option value="false"${def===false?' selected':''}>No</option></select>`;
+    }else if(q.type==='choice'){
+      input=`<select id="${id}" class="q-input"><option value="">No answer</option>`+
+        (q.choices||[]).map(c=>`<option value="${escAttr(c)}"${c===def?' selected':''}>${esc(c)}</option>`).join('')+`</select>`;
+    }else{
+      const kind=q.type==='date'?'date':(q.type==='number'||q.type==='integer')?'number':'text';
+      input=`<input id="${id}" class="q-input" type="${kind}" value="${def!=null?escAttr(def):''}">`;
+    }
+    return `<div class="q-item"><div class="q-text">${esc(q.question)}</div>`+
+      (q.why?`<div class="q-why">${esc(q.why)}</div>`:'')+input+`</div>`;
+  }).join('');
+  $('questionsModal').classList.add('show');
+}
+async function submitAnswers(skip){
+  const answers={};
+  if(!skip) pendingQuestions.forEach((q,i)=>{
+    const el=$(`qa_${i}`);
+    if(!el||el.value==='') return;
+    answers[q.id]=q.type==='boolean'?el.value==='true':(q.type==='number'||q.type==='integer')?Number(el.value):el.value;
+  });
+  $('questionsModal').classList.remove('show');
+  await fetch('/api/agent/answers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answers:skip?null:answers})});
 }
 
 // ── Toasts ───────────────────────────────────

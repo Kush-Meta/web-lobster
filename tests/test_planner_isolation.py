@@ -2,8 +2,8 @@
 
 A page plants instructions (the canary) in its text and its URL. The agent
 reads a price and an airline off it, a later sub-goal fails and gets replanned,
-and the run is saved to memory. Every prompt the planner receives (the plan,
-the replan, the learnings, and the next run's memory) has to be free of the
+and the run is saved to memory. Every prompt the planner receives (the brief, the
+plan, the replan, the learnings, and the next run's memory) has to be free of the
 canary, while the typed price still reaches the planner and the airline text
 still reaches the executor and the user.
 """
@@ -21,7 +21,7 @@ from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.core.schemas import Action, ActionType, ValidationResult
 from web_lobster.memory.task_memory import TaskMemory
-from web_lobster.models.planner import PLANNER_SYSTEM, REPLAN_SYSTEM
+from web_lobster.models.planner import BRIEF_SYSTEM, PLANNER_SYSTEM, REPLAN_SYSTEM
 
 TASK = "Find the cheapest fare"
 REPLANNED_GOAL = "Look up {{$airline}} fares under {{$price}}"
@@ -40,6 +40,12 @@ class RecordingBackend:
 
 
 def _planner_reply(system: str, prompt: str) -> str:
+    if system == BRIEF_SYSTEM:
+        return json.dumps({
+            "goal": "Book the cheapest fare", "assumptions": ["One adult"],
+            "questions": [{"id": "cabin", "question": "Which cabin?", "type": "choice",
+                           "choices": ["Economy", "Business"], "default": "Economy"}],
+        })
     if system == PLANNER_SYSTEM:
         return json.dumps([
             {"id": 1, "goal": "Open the fare results", "success_criteria": "Fares are listed",
@@ -72,9 +78,11 @@ async def test_planner_never_sees_page_content(sites, tmp_path):
     )
 
     goals_seen = []
+    briefings = []
 
     async def decide(**kwargs):
         goals_seen.append(kwargs["sub_goal"])
+        briefings.append(kwargs["briefing"])
         return Action(action=ActionType.DONE, reason="done")
 
     orchestrator.executor.decide = AsyncMock(side_effect=decide)
@@ -87,17 +95,22 @@ async def test_planner_never_sees_page_content(sites, tmp_path):
         pytest.skip("Playwright Chromium isn't installed")
     assert result.success, result.error
 
-    # The planner was asked three times: plan, replan, learnings. None saw the page.
-    assert len(planner.prompts) == 3
+    # The planner was asked four times: brief, plan, replan, learnings. None saw the page.
+    assert len(planner.prompts) == 4
     for prompt in planner.prompts:
         assert "CANARY" not in prompt
         assert "Evil Air" not in prompt
-    # The plan hears where the browser starts (the caller's URL, without its query);
-    # later prompts get no paths at all.
-    assert f"THE BROWSER STARTS AT: {a.origin}/fare\n" in planner.prompts[0] + "\n"
-    assert all("/fare" not in prompt for prompt in planner.prompts[1:])
+    # The brief and the plan hear where the browser starts (the caller's URL, without
+    # its query); later prompts get no paths at all.
+    for prompt in planner.prompts[:2]:
+        assert f"THE BROWSER STARTS AT: {a.origin}/fare\n" in prompt + "\n"
+    assert all("/fare" not in prompt for prompt in planner.prompts[2:])
 
-    replan_prompt = planner.prompts[1]
+    # The brief's default answer and the planner's own brief carry into planning.
+    assert "Which cabin? → Economy" in planner.prompts[1]
+    replan_prompt = planner.prompts[2]
+    assert "Goal: Book the cheapest fare" in replan_prompt
+    assert all(b and "Overall goal: Book the cheapest fare" in b for b in briefings)
     assert "{{$price}} = 1209.5 (number" in replan_prompt
     assert "{{$airline}}: text read from" in replan_prompt and "withheld" in replan_prompt
     assert f"CURRENT SITE: {a.origin}" in replan_prompt

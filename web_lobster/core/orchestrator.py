@@ -5,7 +5,12 @@ manages sub-goal progression, handles failures and re-planning, and
 enforces safety rails.
 
 Flow:
-  1. Planner decomposes task → sub-goals
+  0. Think first, before the browser opens (core/briefing.py): the planner writes
+     a brief, code checks it against the mandate, and its questions are settled
+     by the user, supplied answers, or defaults. A run that still needs answers
+     stops here.
+  1. Planner decomposes task → sub-goals, then code reviews the plan against the
+     mandate and the planner gets one round to fix what's found
   2. For each sub-goal:
      a. Observer captures page state
      b. Executor picks an action
@@ -28,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from pathlib import Path
 from collections import Counter
 from typing import Optional
 
@@ -40,8 +46,22 @@ from web_lobster.core.schemas import (
     TaskPlan,
     ValidationResult,
 )
+from web_lobster.core.briefing import (
+    MANDATE_QUESTION_ID,
+    MAX_NOTES,
+    Briefing,
+    PlanningContext,
+    Question,
+    TaskBrief,
+    mandate_gaps,
+    mandate_lines,
+    mandate_question,
+    origin_strings,
+    resolve_answers,
+    review_plan,
+)
 from web_lobster.core.config import WebLobsterConfig
-from web_lobster.core.values import ExtractedValue, origin_of, render_value_refs
+from web_lobster.core.values import ExtractedValue, ValueSpec, origin_of, render_value_refs
 from web_lobster.models.planner import Planner
 from web_lobster.models.executor import Executor
 from web_lobster.models.validator import Validator
@@ -95,8 +115,19 @@ class Orchestrator:
         config: WebLobsterConfig,
         shared_state=None,
         mandate: Optional[Mandate] = None,
+        asker=None,
     ):
+        """asker answers the brief's questions: an async callable taking the open
+        questions and the brief, returning answers by id (or None to skip). Without
+        one, the UI's answer_questions is used when there is a UI."""
         self.config = config
+        self.asker = asker
+        # Trusted context for the planner, built before the browser opens (think())
+        self.context: Optional[PlanningContext] = None
+        self._plan_issues: list[str] = []
+        # Steps each sub-goal took and the origins the run visited, for memory
+        self._goal_steps: dict[int, int] = {}
+        self._visited_origins: set[str] = set()
 
         # Mandate enforcement — None keeps the unscoped behaviour
         self.enforcer = MandateEnforcer(mandate) if mandate else None
@@ -185,26 +216,54 @@ class Orchestrator:
         if self.ui:
             await self.ui.wait_if_paused()
 
-    async def run(self, task: str, start_url: str = "https://www.google.com") -> AgentResult:
+    def recall(self, task: str, start_url: str) -> tuple[Optional[str], int]:
+        """Past experience for the planner: similar tasks, and runs on the same sites."""
+        origins = [origin_of(start_url)]
+        if self.enforcer:
+            origins += origin_strings(self.enforcer.mandate.origins)
+        memory_context = self.memory.format_for_prompt(task, origins=origins)
+        memory_hits = len(self.memory.find_similar(task)) if memory_context else 0
+        if memory_context:
+            logger.info("memory_context", hits=memory_hits)
+        return memory_context, memory_hits
+
+    async def run(
+        self,
+        task: str,
+        start_url: str = "https://www.google.com",
+        *,
+        notes: Optional[str] = None,
+        requested_values: Optional[list[ValueSpec]] = None,
+        brief: Optional[TaskBrief] = None,
+        answers: Optional[dict] = None,
+    ) -> AgentResult:
         """Execute a complete task from start to finish.
 
         Args:
             task: Natural language task description
             start_url: URL to start the browser at
+            notes: The user's standing notes for the planner (trusted)
+            requested_values: Values the caller wants back, so the plan reaches them
+            brief: A brief written earlier, to run without rethinking the task
+            answers: Answers to the brief's questions, by question id
 
         Returns:
             AgentResult with success status and details
         """
         logger.info("task_start", task=task)
         start_time = time.time()
-        # Retrieve relevant past experiences before planning (before UI start
-        # so we can pass memory_hits to both the display and the UI event)
-        memory_context = self.memory.format_for_prompt(task)
-        memory_hits = len(self.memory.find_similar(task)) if memory_context else 0
-        if memory_context:
-            logger.info("memory_context", hits=memory_hits)
+        memory_context, memory_hits = self.recall(task, start_url)
 
         await self._ui_emit("on_task_start", task, memory_hits=memory_hits)
+
+        # Think first. This runs before the time limit starts: a person may be answering.
+        briefing = await self.think(
+            task, start_url, notes=notes, requested_values=requested_values,
+            brief=brief, answers=answers, memory_context=memory_context,
+        )
+        if briefing.needs_input or briefing.declined:
+            return self._stopped_before_start(task, start_time, briefing)
+        context = briefing.context
 
         # Start live display (CLI mode only)
         if not self.ui:
@@ -215,7 +274,7 @@ class Orchestrator:
         if max_seconds > 0:
             try:
                 return await asyncio.wait_for(
-                    self._run_inner(task, start_url, start_time, memory_context, memory_hits),
+                    self._run_inner(task, start_url, start_time, context, memory_hits),
                     timeout=max_seconds,
                 )
             except asyncio.TimeoutError:
@@ -233,16 +292,162 @@ class Orchestrator:
                     violations=self._violations(),
                     values=dict(self.state.values),
                     receipts=list(self.receipts.receipts),
+                    **self._briefing_fields(),
                 )
         else:
-            return await self._run_inner(task, start_url, start_time, memory_context, memory_hits)
+            return await self._run_inner(task, start_url, start_time, context, memory_hits)
+
+    async def think(
+        self,
+        task: str,
+        start_url: str,
+        *,
+        notes: Optional[str] = None,
+        requested_values: Optional[list[ValueSpec]] = None,
+        brief: Optional[TaskBrief] = None,
+        answers: Optional[dict] = None,
+        memory_context: Optional[str] = None,
+    ) -> Briefing:
+        """Think the task through before the browser opens: write a brief, check it
+        against the mandate, and settle the questions it raises.
+
+        Supplied answers count first. If questions remain and someone can be asked
+        (the dashboard, a terminal), they're asked, and defaults and the planner's
+        judgement cover whatever they skip. If nobody can be asked, defaults apply,
+        and a question without one blocks the run unless agent.questions is "assume".
+        Nothing here reads a page: the browser hasn't started.
+        """
+        mandate = self.enforcer.mandate if self.enforcer else None
+        context = PlanningContext(
+            task=task,
+            mandate=mandate_lines(mandate) if mandate else [],
+            requested_values=list(requested_values or []),
+            notes=notes if notes is not None else self._notes_from_config(),
+            memory=memory_context,
+            given=self._given(answers),
+        )
+        if brief is None and self.config.agent.briefing and hasattr(self.planner, "brief"):
+            try:
+                brief = await self.planner.brief(task, context.render(), start_url)
+            except Exception as e:
+                logger.warning("brief_failed", error=str(e)[:160])
+        context.brief = brief
+
+        questions = list(brief.questions) if brief else []
+        if brief and mandate:
+            context.gaps = mandate_gaps(brief, mandate)
+            gap_question = mandate_question(context.gaps)
+            if gap_question:
+                questions.append(gap_question)
+        context.questions = questions
+        # Answers that match a question are shown with it; the rest stay as given.
+        context.given = {k: v for k, v in context.given.items() if k not in {q.id for q in questions}}
+        if brief:
+            logger.info("brief_ready", questions=len(questions), gaps=len(context.gaps))
+            await self._ui_emit("on_brief_ready", brief, context.gaps)
+
+        assume = self.config.agent.questions == "assume"
+        resolution = resolve_answers(questions, answers, use_defaults=False)
+        asker = self._asker()
+        blocking: list[Question] = []
+        if resolution.unanswered and asker and not assume:
+            try:
+                given = await asker(resolution.unanswered, brief)
+            except Exception as e:
+                logger.warning("asking_failed", error=str(e)[:160])
+                given = None
+            resolution = resolve_answers(questions, {**(answers or {}), **(given or {})}, use_defaults=True)
+            # They were asked: whatever is still open, they chose to leave to the planner.
+        else:
+            resolution = resolve_answers(questions, answers, use_defaults=True)
+            if not assume:
+                blocking = resolution.unanswered
+
+        context.answers = resolution.answers
+        self.context = context
+        return Briefing(
+            context=context,
+            unanswered=blocking,
+            problems=resolution.problems,
+            declined=context.answers.get(MANDATE_QUESTION_ID) is False,
+        )
+
+    @staticmethod
+    def _given(answers: Optional[dict]) -> dict:
+        """Answers supplied before any question was asked, under the user's own labels."""
+        return {
+            str(key): value if isinstance(value, (bool, int, float, str)) else str(value)
+            for key, value in list((answers or {}).items())[:10]
+            if value is not None
+        }
+
+    def _asker(self):
+        if self.asker:
+            return self.asker
+        return getattr(self.ui, "answer_questions", None) if self.ui else None
+
+    def _notes_from_config(self) -> Optional[str]:
+        path = self.config.agent.notes_file
+        if not path:
+            return None
+        try:
+            return Path(path).expanduser().read_text()[:MAX_NOTES]
+        except OSError as e:
+            logger.warning("notes_unreadable", error=str(e)[:120])
+            return None
+
+    def _stopped_before_start(self, task: str, start_time: float, briefing: Briefing) -> AgentResult:
+        """The result of a run that ended before the browser opened."""
+        error = None
+        if briefing.declined:
+            error = "Not run: the user chose not to run a task that needs more than the mandate allows."
+        logger.info("stopped_before_start", needs_input=briefing.needs_input, declined=briefing.declined)
+        context = briefing.context
+        return AgentResult(
+            success=False,
+            task=task,
+            elapsed_seconds=time.time() - start_time,
+            error=error,
+            memory_hits=0,
+            brief=context.brief,
+            questions=briefing.unanswered,
+            needs_input=briefing.needs_input,
+            answers={**context.given, **context.answers},
+            gaps=context.gaps,
+            problems=briefing.problems,
+        )
+
+    async def _review_plan(self, plan: TaskPlan, context: PlanningContext, start_url: str) -> TaskPlan:
+        """Check the plan in code, and give the planner one round to fix what's found.
+
+        The revision is kept unless it leaves more problems than it fixed.
+        """
+        if not self.config.agent.plan_review:
+            return plan
+        mandate = self.enforcer.mandate if self.enforcer else None
+        issues = review_plan(plan, mandate, self.config.agent.max_sub_goals)
+        if issues and hasattr(self.planner, "revise"):
+            logger.info("plan_review_issues", count=len(issues))
+            await self._ui_emit("on_plan_review", issues)
+            try:
+                revised = await self.planner.revise(plan.task, plan, issues, context.render(), start_url)
+            except Exception as e:
+                logger.warning("plan_revision_failed", error=str(e)[:160])
+                revised = []
+            if revised:
+                candidate = TaskPlan(task=plan.task, sub_goals=revised)
+                remaining = review_plan(candidate, mandate, self.config.agent.max_sub_goals)
+                if len(remaining) <= len(issues):
+                    plan, issues = candidate, remaining
+        self._plan_issues = issues
+        return plan
 
     async def _run_inner(
         self,
         task: str,
         start_url: str,
         start_time: float,
-        memory_context: Optional[str],
+        context: PlanningContext,
         memory_hits: int,
     ) -> AgentResult:
         try:
@@ -261,11 +466,12 @@ class Orchestrator:
             # 2. Plan the task (informed by episodic memory)
             plan = await retry_async(
                 self.planner.plan, task,
-                memory_context,
+                context.render(),
                 start_url,
                 max_retries=2,
                 base_delay=2.0,
             )
+            plan = await self._review_plan(plan, context, start_url)
             self.state.plan = plan
             logger.info("plan_ready", sub_goals=len(plan.sub_goals))
             await self._ui_emit("on_plan_ready", plan)
@@ -286,7 +492,9 @@ class Orchestrator:
                 logger.info("subgoal_start", id=sub_goal.id, goal=sub_goal.goal)
                 await self._ui_emit("on_subgoal_start", sub_goal)
 
+                steps_before = self.state.step_count
                 success = await self._execute_subgoal(sub_goal)
+                self._goal_steps[id(sub_goal)] = self.state.step_count - steps_before
                 await self._seal_receipt()
 
                 if success:
@@ -337,6 +545,7 @@ class Orchestrator:
                 violations=self._violations(),
                 values=dict(self.state.values),
                 receipts=list(self.receipts.receipts),
+                **self._briefing_fields(),
             )
 
             if result.success:
@@ -359,6 +568,7 @@ class Orchestrator:
                 violations=self._violations(),
                 values=dict(self.state.values),
                 receipts=list(self.receipts.receipts),
+                **self._briefing_fields(),
             )
         finally:
             if not self.ui:
@@ -413,6 +623,8 @@ class Orchestrator:
                 if self.enforcer:
                     observation = self.enforcer.redact_observation(observation)
                 self.state.current_observation = observation
+                if observation.url.startswith(("http://", "https://")):
+                    self._visited_origins.add(origin_of(observation.url))
                 await self._ui_emit("on_observation", observation)
 
                 # --- LOGIN DETECTION ---
@@ -438,6 +650,7 @@ class Orchestrator:
                     reflection=combined_reflection,
                     mcp_tools=self.mcp.tools if self.mcp.has_tools else None,
                     data_placeholders=self.enforcer.placeholder_names() if self.enforcer else None,
+                    briefing=self.context.for_executor() if self.context else None,
                 )
 
                 # --- MCP TOOL CALL ---
@@ -862,6 +1075,7 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
                 current_origin=origin_of(self.browser.current_url),
                 failure=self._describe_failure(failed_goal),
                 values=list(self.state.values.values()),
+                context=self.context.render(include_memory=False) if self.context else None,
             )
 
             if not new_goals:
@@ -929,8 +1143,29 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             answer=answer,
             learnings=learnings,
             trusted=True,
+            origins=sorted(self._visited_origins),
+            goal_stats=[self._goal_stat(sg) for sg in plan.sub_goals],
         )
         self.memory.save(record)
+
+    def _goal_stat(self, sub_goal: SubGoal) -> dict:
+        """Counts and planner-written text about one sub-goal, for memory."""
+        receipt = self.receipts.last_for(sub_goal.id)
+        return {
+            "goal": sub_goal.goal,
+            "done": sub_goal.status == SubGoalStatus.COMPLETED,
+            "basis": receipt.basis if receipt else None,
+            "steps": self._goal_steps.get(id(sub_goal), 0),
+        }
+
+    def _briefing_fields(self) -> dict:
+        context = self.context
+        return {
+            "brief": context.brief if context else None,
+            "answers": {**context.given, **context.answers} if context else {},
+            "gaps": context.gaps if context else [],
+            "plan_issues": list(self._plan_issues),
+        }
 
     async def _request_confirmation(self, action: Action, reason: str) -> bool:
         """Request user confirmation for a high-risk action.
@@ -962,6 +1197,13 @@ class AgentResult:
         violations: Optional[list[Violation]] = None,
         values: Optional[dict[str, ExtractedValue]] = None,
         receipts: Optional[list[Receipt]] = None,
+        brief: Optional[TaskBrief] = None,
+        questions: Optional[list[Question]] = None,
+        needs_input: bool = False,
+        answers: Optional[dict] = None,
+        gaps: Optional[list[str]] = None,
+        plan_issues: Optional[list[str]] = None,
+        problems: Optional[list[str]] = None,
     ):
         self.success = success
         self.task = task
@@ -975,9 +1217,17 @@ class AgentResult:
         self.violations = violations or []
         self.values = values or {}
         self.receipts = receipts or []
+        # Thinking before acting (core/briefing.py)
+        self.brief = brief
+        self.questions = questions or []   # still unanswered when needs_input
+        self.needs_input = needs_input
+        self.answers = answers or {}
+        self.gaps = gaps or []
+        self.plan_issues = plan_issues or []
+        self.problems = problems or []
 
     def summary(self) -> str:
-        status = "✓ SUCCESS" if self.success else "✗ FAILED"
+        status = "? NEEDS INPUT" if self.needs_input else "✓ SUCCESS" if self.success else "✗ FAILED"
         lines = [
             f"\n{'='*50}",
             f"  {status}",
@@ -990,6 +1240,20 @@ class AgentResult:
             lines.append(f"  Memory: {self.memory_hits} similar past task(s) used")
         if self.error:
             lines.append(f"  Error: {self.error}")
+        if self.brief and self.brief.goal:
+            lines.append(f"  Brief: {self.brief.goal}")
+            for assumption in self.brief.assumptions:
+                lines.append(f"    assumed: {assumption}")
+        for gap in self.gaps:
+            lines.append(f"    ⚠ mandate: {gap}")
+        if self.needs_input:
+            lines.append("  Answer these, then run again with --answer ID=VALUE (or --assume):")
+            for question in self.questions:
+                lines.append(f"    {question.id}: {question.question} ({question.expected()})")
+            for problem in self.problems:
+                lines.append(f"    didn't fit: {problem}")
+        if self.plan_issues:
+            lines.append(f"  Plan review: {len(self.plan_issues)} issue(s) left after revision")
         if self.violations:
             lines.append(f"  Mandate blocked {len(self.violations)} action(s):")
             for v, count in collapse_violations(self.violations)[:10]:

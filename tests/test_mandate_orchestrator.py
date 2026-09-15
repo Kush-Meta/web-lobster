@@ -36,6 +36,9 @@ async def test_injected_executor_is_contained_and_task_still_completes(sites, tm
     config.browser.default_timeout = 5.0
     config.agent.dom_mode = True
     config.mcp_servers = [MCPServerConfig(name="fs", command="unused")]
+    # These tests script the plan; thinking first has its own tests.
+    config.agent.briefing = False
+    config.agent.plan_review = False
 
     ui = FakeUI()
     orchestrator = Orchestrator(config, shared_state=ui, mandate=mandate)

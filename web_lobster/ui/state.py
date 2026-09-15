@@ -76,6 +76,9 @@ class SharedState:
         # Login-required flow
         self._login_future: Optional[asyncio.Future] = None
 
+        # Questions-before-running flow
+        self._answers_future: Optional[asyncio.Future] = None
+
     # ── Event publishing ──────────────────────────────────
 
     async def emit(self, event_type: str, **data) -> None:
@@ -111,6 +114,15 @@ class SharedState:
         goals = [{"id": sg.id, "goal": sg.goal, "status": sg.status.value}
                  for sg in plan.sub_goals]
         await self.emit("plan_ready", sub_goals=goals)
+
+    async def on_brief_ready(self, brief, gaps: Optional[list[str]] = None) -> None:
+        self.phase = AgentPhase.PLANNING
+        await self.emit("brief", goal=brief.goal, thinking=brief.thinking,
+                        assumptions=brief.assumptions, success=brief.success,
+                        risks=brief.risks, gaps=gaps or [])
+
+    async def on_plan_review(self, issues: list[str]) -> None:
+        await self.emit("plan_review", issues=issues)
 
     async def on_subgoal_start(self, subgoal: SubGoal) -> None:
         self.current_subgoal = subgoal
@@ -226,6 +238,28 @@ class SharedState:
         """Called by the UI when user approves/declines."""
         if self._confirmation_future and not self._confirmation_future.done():
             self._confirmation_future.set_result(approved)
+
+    async def answer_questions(self, questions, brief=None) -> Optional[dict]:
+        """Ask the planner's questions in the dashboard. Blocks until answered.
+
+        Returns answers by question id, or None when the user skips or doesn't
+        answer within 10 minutes; defaults and assumptions then apply.
+        """
+        await self.emit("questions_request",
+                        goal=brief.goal if brief else "",
+                        questions=[q.model_dump(mode="json") for q in questions])
+        loop = asyncio.get_event_loop()
+        self._answers_future = loop.create_future()
+        try:
+            return await asyncio.wait_for(self._answers_future, timeout=600.0)
+        except asyncio.TimeoutError:
+            await self.emit("questions_timeout")
+            return None
+
+    def resolve_answers(self, answers: Optional[dict]) -> None:
+        """Called by the UI with the user's answers, or None to skip them."""
+        if self._answers_future and not self._answers_future.done():
+            self._answers_future.set_result(answers)
 
     async def on_login_required(self, url: str) -> None:
         """Pause and alert the UI that a login page was detected.

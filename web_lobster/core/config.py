@@ -70,6 +70,12 @@ class AgentConfig(BaseModel):
     dom_mode: bool = False           # extract rich DOM instead of / alongside screenshot
     max_seconds: int = 600           # wall-clock timeout; 0 = no limit
     evidence_wait_seconds: float = 5.0  # max time to re-check evidence while requests are in flight
+    # Thinking before acting (core/briefing.py)
+    briefing: bool = True            # write a brief, and settle its questions, before the browser opens
+    questions: str = "ask"           # "ask": ask whoever can answer, else stop for answers; "assume": never ask
+    plan_review: bool = True         # check the plan against the mandate and let the planner fix it once
+    max_sub_goals: int = 6           # plan review asks for merging above this
+    notes_file: Optional[str] = None # standing notes for the planner, e.g. ~/.web_lobster/notes.md
 
 
 class WebLobsterConfig(BaseModel):

@@ -29,6 +29,9 @@ def _orchestrator(tmp_path, sub_goal: SubGoal, mandate=None) -> tuple[Orchestrat
     config.browser.headless = True
     config.browser.default_timeout = 5.0
     config.agent.dom_mode = True
+    # These tests script the plan; thinking first has its own tests.
+    config.agent.briefing = False
+    config.agent.plan_review = False
 
     ui = FakeUI()
     orchestrator = Orchestrator(config, shared_state=ui, mandate=mandate)

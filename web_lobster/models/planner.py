@@ -1,11 +1,13 @@
-"""Planner model — decomposes a user task into ordered sub-goals.
+"""Planner model — thinks a task through, then decomposes it into ordered sub-goals.
 
-Called once at the start, and again if the validator triggers a re-plan.
+Called before the browser opens to write a brief (core/briefing.py), then to
+plan, once more to fix what plan review finds, and again if a sub-goal fails.
 Uses the largest available model for best reasoning quality.
 
 The planner is the trusted side of the agent and never sees page content. Its
-inputs are the user's task, its own sub-goals, counts, the current origin, and
-values that passed type checks (core/values.py).
+inputs are the user's task, notes, and answers, the mandate, the clock, trusted
+memory, its own brief and sub-goals, counts, the current origin, and values that
+passed type checks (core/values.py).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from typing import Optional
 from pydantic import TypeAdapter, ValidationError
 
 from web_lobster.core.schemas import SubGoal, TaskPlan
+from web_lobster.core.briefing import TaskBrief, parse_brief
 from web_lobster.core.values import ExtractedValue, ValueSpec
 from web_lobster.verify.evidence import EvidenceCheck
 from web_lobster.verify.receipts import page_label
@@ -85,6 +88,13 @@ CRITICAL RULES:
   RIGHT final sub-goal: "Open the Eiffel Tower article".
 - If you're told where the browser starts, don't plan steps to get there.
 
+CONTEXT: the prompt may start with NOW (resolve dates like "next Friday" against it),
+the MANDATE (the sites, data, and changes the user approved; the browser blocks
+everything else, so plan inside it, and type granted data as {{name}}), VALUES THE
+USER WANTS BACK, USER NOTES, answers GIVEN BY THE USER UP FRONT, your own TASK BRIEF,
+USER ANSWERS, and past experience.
+The user's answers and notes win over your assumptions.
+
 VALUES: you never see web pages yourself. If a later sub-goal depends on something
 a page shows (a price, a date, a count, yes/no), add "extract" to the sub-goal that
 reaches that page, for example:
@@ -130,6 +140,53 @@ original plan.
 
 Respond ONLY with a JSON array of sub-goals. No other text."""
 
+BRIEF_SYSTEM = """You are the planner for a browser agent. Before the browser opens, think the
+task through and write a brief. You never see web pages, and nothing has loaded yet.
+
+Work out:
+- goal: the outcome the user wants, in one sentence.
+- thinking: your reasoning in a few sentences: what the task really asks, the likely
+  route through the site, and what could go wrong.
+- assumptions: what you'll assume where the task is silent and almost anyone would
+  guess the same: units, the site's own language, the cheapest option when the user
+  asks for cheap.
+- questions: facts only the user knows that the task leaves out: dates, where a trip
+  starts, how many people, a budget, which account, whether to really submit. Don't
+  assume these. Ask, and put your best guess in "default" so the task can still run
+  if nobody answers. At most 3; a task that already says everything needs none. Each
+  has an "id", the "question", "why" it matters, a "type" (text, number, integer,
+  boolean, date, or choice with "choices"), and the "default".
+- success: what the finished page or result looks like.
+- sites: the sites the task needs, as https:// origins.
+- data: the user's personal details it must type, by name (email, full_name, phone).
+- changes_something: true if it submits, buys, books, sends, saves, or deletes anything.
+- risks: anything costly or hard to undo, like spending money or sending a message.
+
+Use the context you're given: NOW for dates, the MANDATE for what's allowed, USER
+NOTES, answers GIVEN BY THE USER UP FRONT, and past experience. Don't ask about
+anything they already settle.
+
+Respond ONLY with a JSON object. No other text.
+
+Example, for "Book a table for two at Nopa on Friday":
+{"goal": "Reserve a table for 2 at Nopa on the coming Friday",
+ "thinking": "Nopa takes bookings on its website. Friday means the coming Friday. No time is given, and the wrong time books the wrong table.",
+ "assumptions": ["A party of 2", "The coming Friday"],
+ "questions": [
+   {"id": "time", "question": "What time should the table be for?", "why": "Bookings are for a specific time", "type": "text", "default": "19:00"},
+   {"id": "complete_booking", "question": "Should I complete the booking, or stop at the confirmation step?", "why": "Completing it reserves a real table", "type": "boolean", "default": false}],
+ "success": "A confirmation for a table for 2 at Nopa on Friday",
+ "sites": ["https://www.nopasf.com"],
+ "data": ["full_name", "phone"],
+ "changes_something": true,
+ "risks": ["Makes a real reservation in the user's name"]}"""
+
+REVISE_SYSTEM = PLANNER_SYSTEM + """
+
+REVISING: you already wrote a plan, and code reviewed it against the user's mandate
+and found problems. Return the whole plan again with every problem fixed, keeping
+the parts that were fine. Respond ONLY with the JSON array."""
+
 
 class Planner:
     """Task decomposition using a large language model."""
@@ -139,23 +196,18 @@ class Planner:
         self.temperature = temperature
 
     async def plan(
-        self, task: str, memory_context: Optional[str] = None, start_url: Optional[str] = None,
+        self, task: str, context: Optional[str] = None, start_url: Optional[str] = None,
     ) -> TaskPlan:
         """Decompose a task into sub-goals.
 
-        start_url comes from the user, not a page. Only its origin and path are
-        shown: query strings often carry tokens.
+        context is a rendered PlanningContext (core/briefing.py): trusted input
+        only. start_url comes from the user, not a page. Only its origin and path
+        are shown: query strings often carry tokens.
         """
         logger.info("planning", task=task)
 
-        prompt = f"USER TASK: {task}"
-        if start_url:
-            prompt += f"\nTHE BROWSER STARTS AT: {page_label(start_url)}"
-        if memory_context:
-            prompt = f"{memory_context}\n\n{prompt}"
-
         response = await self.backend.generate(
-            prompt=prompt,
+            prompt=self._task_prompt(task, context, start_url),
             system=PLANNER_SYSTEM,
             temperature=self.temperature,
             max_tokens=4096,
@@ -178,6 +230,7 @@ class Planner:
         current_origin: str,
         failure: str,
         values: Optional[list[ExtractedValue]] = None,
+        context: Optional[str] = None,
     ) -> list[SubGoal]:
         """Create a revised plan after a failure.
 
@@ -203,6 +256,8 @@ EXTRACTED VALUES:
 {values_summary or "  (none)"}
 
 Create a revised plan to complete the remaining work from the current state."""
+        if context:
+            prompt = f"{context}\n\n{prompt}"
 
         logger.info("replanning", failed_goal=failed_goal.goal)
         response = await self.backend.generate(
@@ -213,6 +268,56 @@ Create a revised plan to complete the remaining work from the current state."""
         )
 
         return self._parse_subgoals(response)
+
+    async def brief(
+        self, task: str, context: Optional[str] = None, start_url: Optional[str] = None,
+    ) -> Optional[TaskBrief]:
+        """Think the task through before the browser opens. None when the reply
+        can't be read; the run then goes ahead without a brief."""
+        logger.info("briefing", task=task)
+        response = await self.backend.generate(
+            prompt=self._task_prompt(task, context, start_url),
+            system=BRIEF_SYSTEM,
+            temperature=self.temperature,
+            max_tokens=1500,
+        )
+        brief = parse_brief(response)
+        if brief is None:
+            logger.warning("brief_parse_failed")
+        return brief
+
+    async def revise(
+        self,
+        task: str,
+        plan: TaskPlan,
+        issues: list[str],
+        context: Optional[str] = None,
+        start_url: Optional[str] = None,
+    ) -> list[SubGoal]:
+        """Rewrite a plan to fix what plan review found. The issues are built by
+        code from the plan and the mandate, never from pages."""
+        current = json.dumps(
+            [goal.model_dump(mode="json", include={"id", "goal", "success_criteria", "extract", "evidence"})
+             for goal in plan.sub_goals],
+            indent=1,
+        )
+        problems = "\n".join(f"- {issue}" for issue in issues)
+        prompt = (
+            f"{self._task_prompt(task, context, start_url)}\n\n"
+            f"YOUR PLAN:\n{current}\n\nPROBLEMS FOUND:\n{problems}\n\nReturn the fixed plan."
+        )
+        logger.info("revising_plan", issues=len(issues))
+        response = await self.backend.generate(
+            prompt=prompt, system=REVISE_SYSTEM, temperature=self.temperature, max_tokens=4096,
+        )
+        return self._parse_subgoals(response)
+
+    @staticmethod
+    def _task_prompt(task: str, context: Optional[str], start_url: Optional[str]) -> str:
+        prompt = f"USER TASK: {task}"
+        if start_url:
+            prompt += f"\nTHE BROWSER STARTS AT: {page_label(start_url)}"
+        return f"{context}\n\n{prompt}" if context else prompt
 
     async def extract_learnings(
         self,

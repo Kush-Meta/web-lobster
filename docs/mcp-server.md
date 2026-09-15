@@ -70,6 +70,12 @@ Runs a task in a real browser under a mandate. Annotated as destructive and open
 | `values` | `{name, type, description?, choices?}`[] | `[]` | Typed values to read from the final page: number, integer, boolean, date, choice, text |
 | `include_page_text` | bool | `false` | Also return the page-derived answer and text values |
 | `max_steps` | int | config | Cap on browser actions |
+| `notes` | string | none | The user's standing preferences or context, followed as the user's instructions |
+| `brief_id` | string | none | Run a brief saved by `brief_task` or a `needs_input` result, without rethinking it. The task must match |
+| `answers` | object | `{}` | Answers to the brief's questions, by question id |
+| `on_questions` | `ask` \| `assume` | `ask` | `ask` returns `needs_input` when a question has no answer and no default; `assume` never stops for questions |
+
+Before the browser opens, web-lobster thinks the task through: it writes a brief, checks what the task needs against the mandate, and settles its questions with your answers or their defaults. If a question has neither, the call returns `needs_input` with the questions and a `brief_id`, and nothing runs.
 
 Progress is reported while the task runs, as step counts and the plan's own sub-goal text.
 
@@ -87,6 +93,27 @@ Result:
 | `receipt_chain_head` | Digest of the last receipt; keep it |
 | `blocked` | What the mandate stopped, as kind and site (paths left out) |
 | `steps`, `seconds`, `error` | Run stats; URLs in errors are reduced to origins |
+| `needs_input` | Nothing was run: answer `questions`, then call again with `brief_id` and `answers` |
+| `brief_id`, `brief` | The saved brief, and web-lobster's analysis: goal, reasoning, assumptions, what done looks like, risks |
+| `questions` | Questions still needing an answer |
+| `answers` | Answers the run used, defaults included |
+| `mandate_gaps` | What the task seemed to need beyond the mandate |
+
+### `brief_task`
+
+Thinks a task through without opening a browser, and saves the result. Takes `task`, `mandate`, `start_url`, `values`, `notes`, and `answers`, as `web_task` does.
+
+| Field | Meaning |
+|---|---|
+| `brief_id` | Pass to `web_task` with the user's answers |
+| `brief` | Goal, reasoning, assumptions, what done looks like, the sites and data it expects to need, whether it changes anything, risks |
+| `questions` | Each has an `id`, `question`, `why`, `type` (text, number, integer, boolean, date, choice), `choices`, and a `default` if one is sensible. A `run_within_mandate` question appears when the task seems to need more than the mandate allows |
+| `required` | Ids of questions with no answer and no default |
+| `answers` | Answers applied so far, defaults included |
+| `mandate_gaps` | What the task seems to need beyond the mandate |
+| `approval_text` | The mandate in plain words, to show the user |
+
+A typical flow: `brief_task`, then show the user the questions and `approval_text`, then `web_task` with `brief_id` and `answers`. The brief is written before any page loads, so it holds no page text.
 
 ### `check_mandate`
 
@@ -113,6 +140,7 @@ Recomputes a run's saved receipt chain. `intact` says whether every receipt is u
 ## Trust model
 
 - **The mandate is the permission.** The browser enforces its sites, data grants, writes, and expiry on every request, whatever the models decide. A task without a mandate isn't accepted, and a mandate without writes is read-only.
+- **Questions happen before the run, too.** The brief and its questions come before the browser opens, so a call that needs answers returns them instead of starting. Answers are treated like the task: they come from the user or the calling agent, and reach the planner in full.
 - **Approval happens before the run.** Mid-call questions don't work under the current MCP protocol for a live browser session, so approval is up front: the host's tool approval on `web_task`, ideally after showing `check_mandate`'s text. Safety-gate confirmations during a run are declined unless the server runs with `--approve-confirmations`. Typing data the mandate grants, on a site that grant covers, counts as approved by the mandate and doesn't wait on a confirmation.
 - **The caller doesn't read the web by default.** Web pages can carry instructions. Inside web-lobster, the planner never sees them (see the main README). The same boundary extends to the calling agent: results carry counts, typed values, planner-written sub-goal text, and origins, not page text, unless the caller asks with `include_page_text`.
 - **Records don't hold secrets.** Run records store the mandate without data values, and granted values are redacted from receipts and violations.

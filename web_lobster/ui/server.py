@@ -119,6 +119,7 @@ async def get_model_presets():
 class TaskRequest(BaseModel):
     task: str
     start_url: str = "https://www.google.com"
+    notes: Optional[str] = None
 
 
 @app.post("/api/agent/start")
@@ -137,16 +138,16 @@ async def start_agent(req: TaskRequest):
 
     # Run in background
     _agent_task = asyncio.create_task(
-        _run_agent(req.task, req.start_url)
+        _run_agent(req.task, req.start_url, req.notes)
     )
 
     return {"status": "started", "task": req.task}
 
 
-async def _run_agent(task: str, start_url: str):
+async def _run_agent(task: str, start_url: str, notes: Optional[str] = None):
     """Background coroutine that runs the orchestrator."""
     try:
-        result = await _orchestrator.run(task, start_url=start_url)
+        result = await _orchestrator.run(task, start_url=start_url, notes=notes)
         await shared.on_task_complete(
             result.success,
             result.summary(),
@@ -193,6 +194,17 @@ async def confirm_action(req: ConfirmRequest):
     """Approve or decline a safety-flagged action."""
     shared.resolve_confirmation(req.approved)
     return {"status": "confirmed", "approved": req.approved}
+
+
+class AnswersRequest(BaseModel):
+    answers: Optional[dict] = None
+
+
+@app.post("/api/agent/answers")
+async def submit_answers(req: AnswersRequest):
+    """The user's answers to the planner's questions, or null to skip them."""
+    shared.resolve_answers(req.answers)
+    return {"status": "answered"}
 
 
 @app.post("/api/agent/login_done")

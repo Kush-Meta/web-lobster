@@ -7,6 +7,7 @@ Agents that browse for you get hijacked by instructions planted in the pages the
 - The **browser** enforces a mandate on every request: which sites the task may use, what data it may type and where, which changes it may make, and when it expires.
 - The **planner** never reads a web page, so a page can't steer the plan.
 - A step counts as **done** only when code proves it, and every step leaves a hash-chained receipt.
+- Before anything loads, the **planner thinks the task through**: it asks what only you can answer, checks that the mandate covers the task, and code reviews its plan.
 
 It runs on local open-source models (tested on a 16 GB Mac) or on Claude. Use it from the command line or the dashboard, or plug it into OpenClaw, Claude Code, or any MCP client as the web tool other agents delegate to.
 
@@ -16,9 +17,10 @@ It runs on local open-source models (tested on a 16 GB Mac) or on Claude. Use it
 |---|---|---|
 | **[Mandates](#mandates)** | Sites, data grants, write rules and expiry, enforced in the browser's network layer, including every redirect hop | A hijacked model still can't leave the approved sites, leak your data, or make writes you didn't allow |
 | **[Planner isolation](#planner-isolation-and-typed-values)** | The planner never sees page content. Pages reach it only as type-checked values | Prompt injection can't rewrite the plan |
+| **[Thinks before acting](#thinking-before-acting)** | A brief before the browser opens: goal, assumptions, questions for you, mandate gaps. Code reviews the plan, and the planner fixes what it finds | No guessing at dates or choices only you can make, and fewer runs doomed from the first step |
 | **[Evidence and receipts](#evidence-and-receipts)** | URL, request, text and value checks run in code; SHA-256 chained receipts for every step | A page saying "Order placed!" isn't proof, and you get an audit trail you can verify |
 | **[Poisoned-page benchmark](#poisoned-page-benchmark)** | Seven trap sites, scored from what their servers actually received | The defenses are measured, not asserted |
-| **[MCP server](#use-it-from-other-agents-mcp)** | `web_task`, `check_mandate`, `get_run`, `verify_receipts`, plus an OpenClaw and Claude Code plugin | Other agents get web results without reading untrusted pages themselves |
+| **[MCP server](#use-it-from-other-agents-mcp)** | `web_task`, `brief_task`, `check_mandate`, `get_run`, `verify_receipts`, plus an OpenClaw and Claude Code plugin | Other agents get web results without reading untrusted pages themselves |
 | **[Local models](#quick-start)** | One 7B model on a 16 GB Mac, reading pages as text | Free, private, and [tested on live sites](#using-it-for-real) |
 
 In the benchmark, a fully hijacked executor with no defenses causes harm in 6 of 7 scenarios, leaks the user's email in 3, and falsely claims success in 2. With every defense on, that drops to 1, 0 and 0, and an honest executor still completes all seven tasks.
@@ -28,7 +30,10 @@ In the benchmark, a fully hijacked executor with no defenses causes harm in 6 of
 ```mermaid
 flowchart TD
     M["MCP clients<br/>OpenClaw · Claude Code"] -. web_task .-> T
-    T["Task + mandate<br/>sites · data · writes · expiry"] --> P
+    T["Task + mandate<br/>sites · data · writes · expiry"] --> BR["Brief<br/>assumptions · questions · mandate gaps"]
+    BR -- "questions" --> U["You or the calling agent"]
+    U -- "answers" --> BR
+    BR --> P
     P["Planner<br/>never reads web pages"] -- "sub-goals + evidence checks" --> Q
     Q["Executor · Validator · Extractor<br/>read pages, quarantined"] -- actions --> B
     B["Browser<br/>mandate enforced on every request"] -- "page, network log" --> E
@@ -36,7 +41,7 @@ flowchart TD
     Q -- "type-checked values only" --> P
 ```
 
-The planner splits the task into sub-goals, each with the evidence that will prove it done. Quarantined models read pages and pick one browser action at a time. The browser checks each request against the mandate before it leaves. When a sub-goal claims to be done, its evidence checks run against the live page and the network log. Only values that pass their type checks flow back to the planner.
+Before the browser opens, the planner writes a brief and settles any questions with you. It then splits the task into sub-goals, each with the evidence that will prove it done, and code reviews the plan. Quarantined models read pages and pick one browser action at a time. The browser checks each request against the mandate before it leaves. When a sub-goal claims to be done, its evidence checks run against the live page and the network log. Only values that pass their type checks flow back to the planner. The full rundown, with every component and trust boundary, is in [docs/architecture.md](docs/architecture.md).
 
 ## Quick Start
 
@@ -62,7 +67,7 @@ web-lobster run -c configs/claude.yaml "Find the cheapest flight from LAX to JFK
 
 A config passed with `-c` is used exactly as written. Without one, the default config expects larger local models than a 16 GB machine can run, and switches its planner and executor to Claude when `ANTHROPIC_API_KEY` is set.
 
-`web-lobster ui` opens the dashboard. [Using it for real](#using-it-for-real) covers what works today and how to get reliable results.
+Before the browser opens, the planner may ask a question or two, such as which dates you mean. Answer at the prompt, or pass `--assume`. `web-lobster ui` opens the dashboard. [Using it for real](#using-it-for-real) covers what works today and how to get reliable results.
 
 ## Web Dashboard
 
@@ -179,6 +184,34 @@ A replan sees only the planner's own sub-goals, attempt counts, mandate block co
 
 Values come back on the result and in the run summary. Numbers use US separators (`1,209.50`); `1.209,50` is rejected rather than guessed.
 
+## Thinking before acting
+
+Before the browser opens, the planner thinks the task through and writes a brief: the outcome you want, what it will assume, the questions only you can answer, the sites and data the task needs, whether it changes anything, and the risks. Nothing has loaded yet, so the brief comes only from trusted input.
+
+- **Questions.** The planner asks only for facts that only you know and that the task leaves out: dates, where a trip starts, how many people, whether to really submit. It asks at most three, each with its best guess as the default. At a terminal they're asked there, and the dashboard shows a dialog. Over MCP, `brief_task` returns them and `web_task` takes the answers. Unattended runs use the defaults. A question with no default stops the run before the browser opens, unless you pass `--assume`.
+- **Mandate gaps.** Code compares what the brief expects to need with the mandate. If the task looks like it needs a site, data, or a change the mandate doesn't allow, you're asked once whether to run it anyway, inside the mandate.
+- **More context.** The planner plans with today's date, the mandate (data named, never shown), the values you want back, your notes, its brief, your answers, and memory of past runs, including other tasks on the same sites and how many steps each sub-goal took. None of it comes from a page.
+- **Plan review.** Code checks the plan for:
+  - click-level steps, and too many steps;
+  - changes without a request check, or under a read-only mandate;
+  - data the mandate doesn't grant;
+  - values used before any step reads them;
+  - checks on sites the mandate doesn't allow.
+
+  The planner gets one round to fix what's found.
+- **Every step knows the brief.** The executor sees the goal, your answers, the assumptions, and your notes.
+
+```bash
+web-lobster run --notes ~/notes.md "Find me a cheap round-trip flight to Tokyo"
+web-lobster run --answer dates="Dec 15-22" --answer from=SFO "Find me a cheap round-trip flight to Tokyo"
+web-lobster run --assume "..."     # never ask: use defaults and best guesses
+web-lobster run --no-brief "..."   # skip thinking first
+```
+
+Answers given with `--answer` count even when the planner never asks that exact question, because it sees them before writing the brief. Settings live under `agent` in the config: `briefing`, `questions`, `plan_review`, `max_sub_goals`, and `notes_file`. Why it's built this way: [docs/design/step-6-planner-briefing.md](docs/design/step-6-planner-briefing.md).
+
+Limits: a 7B planner still tends to under-ask and to plan click by click. The question rules and plan review push back, and [docs/live-testing.md](docs/live-testing.md) measures how much.
+
 ## Evidence and receipts
 
 A vision model saying "done" is an opinion, and a page can simply display "Success!". So the planner can attach evidence to a sub-goal: checks that code runs against the live browser, all of which must pass before the sub-goal counts as done.
@@ -259,7 +292,7 @@ The harmful effect that remains is a known gap, `allowed-write-abuse`: write rul
 - **Results the caller can rely on.** `verified` means every completed step was proven by evidence checks. Page text (the answer and text values) is withheld unless the caller asks for it, so a web page can't prompt-inject the calling agent through web-lobster.
 - **Receipts outlive the call.** Each run's receipts are saved, and `verify_receipts` checks them against the chain head the caller kept.
 
-The tools are `web_task`, `check_mandate` (validates a mandate and returns text to show the user for approval), `get_run`, and `verify_receipts`. Setup for OpenClaw and Claude Code, the tool reference, and the trust model are in [docs/mcp-server.md](docs/mcp-server.md). The design record is [docs/design/step-5-mcp-server.md](docs/design/step-5-mcp-server.md), [docs/roadmap.md](docs/roadmap.md) tracks the project as a whole, and [integrations/web-lobster-plugin](integrations/web-lobster-plugin) is a bundle that works as both an OpenClaw plugin and a Claude Code plugin.
+The tools are `web_task`, `brief_task` (thinks a task through and returns its questions before anything runs), `check_mandate` (validates a mandate and returns text to show the user for approval), `get_run`, and `verify_receipts`. Setup for OpenClaw and Claude Code, the tool reference, and the trust model are in [docs/mcp-server.md](docs/mcp-server.md). The design record is [docs/design/step-5-mcp-server.md](docs/design/step-5-mcp-server.md), [docs/roadmap.md](docs/roadmap.md) tracks the project as a whole, and [integrations/web-lobster-plugin](integrations/web-lobster-plugin) is a bundle that works as both an OpenClaw plugin and a Claude Code plugin.
 
 ## Project Structure
 
@@ -270,6 +303,7 @@ web_lobster/
 │   ├── orchestrator.py      # Main agent loop coordinator
 │   ├── schemas.py           # All data contracts (Pydantic models)
 │   ├── values.py            # Typed values: the only page-to-planner channel
+│   ├── briefing.py          # Brief, questions, planning context, plan review
 │   └── config.py            # Configuration loader
 ├── models/
 │   ├── base.py              # Abstract model interface

@@ -17,6 +17,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 import click
 
@@ -33,8 +34,10 @@ except ImportError:
 from web_lobster.bench.report import render as render_bench
 from web_lobster.bench.runner import DEFENSES, defenses_by_name, run_benchmark
 from web_lobster.bench.scenarios import SCENARIOS, scenario_by_id
+from web_lobster.core.briefing import Question, TaskBrief, format_answer
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
+from web_lobster.core.values import ValueType
 from web_lobster.mandate.schema import Mandate
 from web_lobster.verify.receipts import write_receipts
 from web_lobster.utils.logging import print_banner, set_log_level, get_logger
@@ -49,6 +52,47 @@ def _load_config(path: str | None) -> WebLobsterConfig:
     if path:
         return WebLobsterConfig.from_yaml(path)
     return WebLobsterConfig.default()
+
+
+def _parse_answers(pairs: tuple[str, ...]) -> dict[str, str]:
+    answers = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep or not key.strip():
+            raise click.BadParameter(f"expected ID=VALUE, got {pair!r}", param_hint="--answer")
+        answers[key.strip()] = value.strip()
+    return answers
+
+
+_YES_NO = {"y": "yes", "n": "no"}
+
+
+async def _ask_in_terminal(questions: list[Question], brief: Optional[TaskBrief]) -> dict[str, object]:
+    """Ask the planner's questions at the terminal. Enter accepts the default; a
+    blank answer leaves the question to the planner's judgement."""
+    click.echo("")
+    if brief and brief.goal:
+        click.echo(f"  🧠 {brief.goal}")
+        for assumption in brief.assumptions:
+            click.echo(f"     assuming {assumption}")
+    click.echo("  Before I start:")
+    answers: dict[str, object] = {}
+    for question in questions:
+        if question.why:
+            click.echo(f"    ({question.why})")
+        hint = "" if question.type == ValueType.TEXT else f" ({question.expected()})"
+        default = "" if question.default is None else format_answer(question.default)
+        while True:
+            raw = click.prompt(f"  ? {question.question}{hint}", default=default, show_default=bool(default)).strip()
+            if not raw:
+                break
+            value = question.coerce(_YES_NO.get(raw.lower(), raw))
+            if value is not None:
+                answers[question.id] = value
+                break
+            click.echo(f"    Please give {question.expected()}, or leave it blank.")
+    click.echo("")
+    return answers
 
 
 @click.group(invoke_without_command=True)
@@ -78,7 +122,18 @@ def cli(ctx):
 @click.option("--headless", is_flag=True, help="Run browser in headless mode")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.option("--max-steps", type=int, default=None, help="Maximum agent steps")
-def run(task, config, mandate, receipts, start_url, dry_run, headless, verbose, max_steps):
+@click.option(
+    "--notes", type=click.Path(exists=True, dir_okay=False),
+    help="A file of standing notes for the planner, such as your city or preferences",
+)
+@click.option(
+    "--answer", "answer_pairs", multiple=True, metavar="ID=VALUE",
+    help="Answer one of the planner's questions ahead of time (repeatable)",
+)
+@click.option("--assume", is_flag=True, help="Don't ask questions: use defaults and best guesses")
+@click.option("--no-brief", is_flag=True, help="Skip thinking the task through before starting")
+def run(task, config, mandate, receipts, start_url, dry_run, headless, verbose, max_steps,
+        notes, answer_pairs, assume, no_brief):
     """Run a task from the command line.
 
     Examples:
@@ -90,6 +145,12 @@ def run(task, config, mandate, receipts, start_url, dry_run, headless, verbose, 
         python -m web_lobster run --mandate examples/mandate_flight_search.yaml
 
         python -m web_lobster run --mandate examples/mandate_flight_search.yaml --receipts run.jsonl
+
+        python -m web_lobster run --notes ~/notes.md --answer dates=2026-12-15 "Find flights to Tokyo"
+
+    Before the browser opens, the planner thinks the task through and may ask a
+    few questions. At a terminal they're asked there; otherwise the run stops
+    with exit code 2 and lists them, unless --assume is given.
     """
     print_banner()
     if verbose:
@@ -116,16 +177,26 @@ def run(task, config, mandate, receipts, start_url, dry_run, headless, verbose, 
         cfg.browser.headless = True
     if max_steps is not None:
         cfg.agent.max_steps = max_steps
+    if no_brief:
+        cfg.agent.briefing = False
+    if assume:
+        cfg.agent.questions = "assume"
+    answers = _parse_answers(answer_pairs)
+    notes_text = Path(notes).read_text() if notes else None
+    # Questions are asked at the terminal only when someone is there to answer.
+    asker = _ask_in_terminal if sys.stdin.isatty() and not assume else None
 
     logger.info("config_loaded", dry_run=cfg.safety.dry_run, headless=cfg.browser.headless)
     logger.info("task", task=task, mandate=bool(task_mandate))
 
-    orchestrator = Orchestrator(cfg, mandate=task_mandate)
-    result = asyncio.run(orchestrator.run(task, start_url=start_url))
+    orchestrator = Orchestrator(cfg, mandate=task_mandate, asker=asker)
+    result = asyncio.run(orchestrator.run(task, start_url=start_url, notes=notes_text, answers=answers))
     click.echo(result.summary())
     if receipts:
         write_receipts(result.receipts, receipts)
         click.echo(f"  Receipts written to {receipts}\n")
+    if result.needs_input:
+        sys.exit(2)
     sys.exit(0 if result.success else 1)
 
 

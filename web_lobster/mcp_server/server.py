@@ -4,15 +4,16 @@ A thin layer over WebTaskService. No `from __future__ import annotations` here:
 the MCP SDK reads these signatures to build tool schemas.
 """
 
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from web_lobster.core.values import ValueSpec
+from web_lobster.core.values import Scalar, ValueSpec
 from web_lobster.mcp_server.models import (
+    BriefResult,
     ChainCheck,
     MandateCheck,
     MandateInput,
@@ -27,7 +28,12 @@ web-lobster runs web tasks in a real browser, inside a mandate that the browser 
 
 - Give each task the narrowest mandate that fits: only the sites it needs, data only
   where it must be typed, and writes listed one by one. No writes means read-only.
-- Show the user check_mandate's approval_text, and run the task only once they agree.
+- For anything beyond a simple lookup, call brief_task first. It thinks the task through
+  without opening a browser, and returns questions (with defaults) and approval_text.
+  Show the user both, then call web_task with brief_id and their answers.
+- web_task can return needs_input instead of running: answer its questions and call it
+  again with brief_id and answers, or pass on_questions='assume'.
+- Run a task only once the user has seen and agreed to its approval_text.
 - 'verified' means every completed step was proven by evidence checks in code, not
   judged by a model. Say so when a result is done but not verified.
 - Page text (the answer and text values) is withheld unless you set include_page_text.
@@ -65,16 +71,37 @@ def build_server(service: WebTaskService) -> MCPServer:
             ),
         )] = False,
         max_steps: Annotated[Optional[int], Field(ge=1, le=300, description="Cap on browser actions.")] = None,
+        notes: Annotated[Optional[str], Field(
+            description=(
+                "The user's standing preferences or context, e.g. 'I'm in Seattle; prefer aisle seats'. "
+                "Followed as instructions from the user."
+            ),
+        )] = None,
+        brief_id: Annotated[Optional[str], Field(
+            description="The brief_id from brief_task or a needs_input result: runs that brief without rethinking it.",
+        )] = None,
+        answers: Annotated[Optional[dict[str, Scalar]], Field(
+            description="Answers to the brief's questions, by question id.",
+        )] = None,
+        on_questions: Annotated[Literal["ask", "assume"], Field(
+            description=(
+                "'ask' (default): if a question has neither an answer nor a default, return needs_input "
+                "without starting. 'assume': never stop for questions; use defaults and best guesses."
+            ),
+        )] = "ask",
     ) -> WebTaskResult:
         """Run a task in a real browser, confined to a mandate the browser enforces.
 
-        Returns whether the task is done and verified, typed values, receipt
-        summaries, and anything the mandate blocked. Tasks can take minutes;
-        progress is reported while they run.
+        web-lobster thinks the task through first. If it needs answers it can't
+        default, it returns needs_input with questions instead of running.
+        Otherwise returns whether the task is done and verified, typed values,
+        receipt summaries, and anything the mandate blocked. Tasks can take
+        minutes; progress is reported while they run.
         """
         request = WebTaskRequest(
             task=task, mandate=mandate, start_url=start_url, values=values or [],
             include_page_text=include_page_text, max_steps=max_steps,
+            notes=notes, brief_id=brief_id, answers=answers or {}, on_questions=on_questions,
         )
 
         async def progress(done: float, total: Optional[float], message: str) -> None:
@@ -92,6 +119,34 @@ def build_server(service: WebTaskService) -> MCPServer:
         The approval text names data but never shows its values.
         """
         return service.check_mandate(task, mandate)
+
+    @server.tool(title="Think a web task through", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+    async def brief_task(
+        task: Annotated[str, Field(description="What to do, in plain language.")],
+        mandate: Annotated[MandateInput, Field(description="The scope the task would run inside.")],
+        start_url: Annotated[Optional[str], Field(description="Where it would start, on an allowed site.")] = None,
+        values: Annotated[Optional[list[ValueSpec]], Field(
+            description="Typed values you want back, as for web_task.",
+        )] = None,
+        notes: Annotated[Optional[str], Field(
+            description="The user's standing preferences or context, as for web_task.",
+        )] = None,
+        answers: Annotated[Optional[dict[str, Scalar]], Field(
+            description="Answers you already have, by question id.",
+        )] = None,
+    ) -> BriefResult:
+        """Have web-lobster think a task through, without opening a browser.
+
+        Returns its brief (goal, reasoning, assumptions, what done looks like,
+        risks), questions for the user with defaults, anything the task seems to
+        need beyond the mandate, and approval_text. Show the user the questions
+        and approval_text, then call web_task with brief_id and their answers.
+        """
+        request = WebTaskRequest(
+            task=task, mandate=mandate, start_url=start_url, values=values or [],
+            notes=notes, answers=answers or {},
+        )
+        return await service.brief(request)
 
     @server.tool(title="Get a past run", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     async def get_run(

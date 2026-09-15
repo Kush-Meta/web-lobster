@@ -1,5 +1,7 @@
 # web-lobster roadmap
 
+How the pieces fit together today: [architecture.md](architecture.md).
+
 ## Direction
 
 Personal agents like OpenClaw can now act on the web for their users, and agentic browsers are routinely hijacked by instructions planted in the pages they read. Making the model better at spotting those instructions doesn't close the problem, because attackers adapt. web-lobster takes the other route: make acting on a planted instruction impossible, and make every claimed result provable.
@@ -16,7 +18,8 @@ The goal is a web agent you can hand a logged-in browser and a goal, knowing it 
 | 4 | **Poisoned-page benchmark.** Trap sites, scored from what their servers received | Done | `fcacf12` |
 | 4b | **Write rules.** Mandates list the writes a task may make, closing the benchmark's same-site gap | Done | `eac51ac` |
 | 5 | **MCP server.** Other agents run web tasks under a mandate, with page text withheld from them by default ([design](design/step-5-mcp-server.md)) | Done | `ba61aaf` |
-| 5b | **Live testing.** Real tasks on live sites with a local 7B model, over the CLI and MCP over stdio, and the fixes they called for ([notes](live-testing.md)) | Done | — |
+| 5b | **Live testing.** Real tasks on live sites with a local 7B model, over the CLI and MCP over stdio, and the fixes they called for ([notes](live-testing.md)) | Done | `fcb0a7a`–`ea6ce24` |
+| 6 | **Think before acting.** Before the browser opens: a brief, questions for the user, mandate-gap checks, richer trusted context for the planner, and code review of the plan ([design](design/step-6-planner-briefing.md)) | Built | — |
 
 ## Where things stand
 
@@ -32,9 +35,10 @@ Live, with a local 7B model on a 16 GB Mac: lookups that start on the right page
 - **Dashboard.** The web dashboard doesn't accept mandates or show receipts.
 - **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.
 
-## Candidates after step 5
+## Candidates after step 6
 
-1. Value-bound write rules, measured with the benchmark.
+1. Value-bound write rules, measured with the benchmark. The user's answers make these natural: a rebooking date they gave can bind the rebooking request.
 2. A live-model benchmark run, to measure how often real models fall for each trap with and without defenses.
 3. Persistent, mandate-scoped browser profiles for signed-in tasks.
-4. Mandates and receipts in the dashboard.
+4. Mandates, receipts, and a notes field in the dashboard (it already asks the planner's questions).
+5. Native extended thinking for Claude planners, alongside the brief's `thinking` field.

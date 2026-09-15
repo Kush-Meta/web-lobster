@@ -6,10 +6,11 @@ for a model filling them in.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from web_lobster.core.briefing import MAX_NOTES, Question, TaskBrief
 from web_lobster.core.values import Scalar, ValueSpec, ValueType
 from web_lobster.verify.receipts import Receipt
 
@@ -89,6 +90,10 @@ class WebTaskRequest(BaseModel):
     values: list[ValueSpec] = Field(default_factory=list)
     include_page_text: bool = False
     max_steps: Optional[int] = Field(default=None, ge=1, le=300)
+    notes: Optional[str] = Field(default=None, max_length=MAX_NOTES)
+    brief_id: Optional[str] = None
+    answers: dict[str, Scalar] = Field(default_factory=dict)
+    on_questions: Literal["ask", "assume"] = "ask"
 
 
 class ValueOut(BaseModel):
@@ -142,12 +147,52 @@ class WebTaskResult(BaseModel):
     steps: int = 0
     seconds: float = 0.0
     error: Optional[str] = Field(default=None, description="Why the run stopped early; URLs reduced to origins.")
+    needs_input: bool = Field(
+        default=False,
+        description="Nothing was run: answer `questions`, then call web_task again with brief_id and answers.",
+    )
+    brief_id: Optional[str] = Field(
+        default=None, description="Pass back to web_task with answers to run this brief without rethinking it.",
+    )
+    brief: Optional[TaskBrief] = Field(
+        default=None, description="web-lobster's own analysis of the task, written before any page loaded.",
+    )
+    questions: list[Question] = Field(
+        default_factory=list, description="Questions that must be answered before the task can run.",
+    )
+    answers: dict[str, Scalar] = Field(default_factory=dict, description="Answers the run used, defaults included.")
+    mandate_gaps: list[str] = Field(
+        default_factory=list, description="What the task seemed to need beyond the mandate.",
+    )
 
 
 class MandateCheck(BaseModel):
     valid: bool
     problems: list[str] = Field(default_factory=list)
     approval_text: str = Field(description="A plain summary of the mandate to show the user before running it.")
+
+
+class BriefResult(BaseModel):
+    brief_id: Optional[str] = Field(default=None, description="Pass to web_task, with answers, to run this brief.")
+    brief: Optional[TaskBrief] = Field(
+        default=None,
+        description="web-lobster's analysis, written before any page loaded; null if the model couldn't write one.",
+    )
+    questions: list[Question] = Field(
+        default_factory=list,
+        description="Questions for the user, each with an id, a type, and usually a default used if unanswered.",
+    )
+    required: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ids of questions with no answer and no default. web_task won't start without them "
+            "unless on_questions is 'assume'."
+        ),
+    )
+    answers: dict[str, Scalar] = Field(default_factory=dict, description="Answers applied so far, defaults included.")
+    mandate_gaps: list[str] = Field(default_factory=list, description="What the task seems to need beyond the mandate.")
+    approval_text: str = Field(description="A plain summary of the mandate to show the user before running.")
+    problems: list[str] = Field(default_factory=list)
 
 
 class RunDetails(BaseModel):

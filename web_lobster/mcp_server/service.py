@@ -14,10 +14,11 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Callable, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
+from web_lobster.core.briefing import TaskBrief
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import AgentResult, Orchestrator
 from web_lobster.core.values import ValueType, origin_of
@@ -26,6 +27,7 @@ from web_lobster.mandate.schema import DataGrant, Mandate
 from web_lobster.mcp_server.agents import ProgressFn, ServerUI, ValueRequestingPlanner
 from web_lobster.mcp_server.models import (
     BlockedAction,
+    BriefResult,
     ChainCheck,
     MandateCheck,
     MandateInput,
@@ -149,6 +151,45 @@ class WebTaskService:
             problems = [str(e)]
         return MandateCheck(valid=not problems, problems=problems, approval_text=approval_text(task, spec))
 
+    async def brief(self, request: WebTaskRequest) -> BriefResult:
+        """Think a task through without opening a browser.
+
+        Returns the brief, its questions with defaults, and any gaps between what
+        the task seems to need and the mandate. Saved like a run, so web_task can
+        run the same brief later with the user's answers.
+        """
+        approval = approval_text(request.task, request.mandate)
+        try:
+            mandate = build_mandate(request.task, request.mandate, self._environ)
+        except MandateError as e:
+            return BriefResult(approval_text=approval, problems=[f"The mandate is invalid: {e}"])
+        start_url = request.start_url or mandate.default_start_url()
+        if not start_url:
+            return BriefResult(approval_text=approval, problems=["Every origin is a wildcard, so start_url is required."])
+
+        run_id = uuid.uuid4().hex[:12]
+        started = time.monotonic()
+        orchestrator = self._orchestrator(request, mandate, progress=None)
+        memory_context, _ = orchestrator.recall(request.task, start_url)
+        briefing = await orchestrator.think(
+            request.task, start_url, notes=request.notes, requested_values=request.values,
+            answers=request.answers, memory_context=memory_context,
+        )
+        context = briefing.context
+        result = WebTaskResult(
+            run_id=run_id, done=False, verified=False,
+            summary="Brief only: nothing was run.",
+            seconds=round(time.monotonic() - started, 1),
+            needs_input=briefing.needs_input, brief_id=run_id, brief=context.brief,
+            questions=briefing.unanswered, answers=context.answers, mandate_gaps=context.gaps,
+        )
+        self._save(run_id, request, mandate, start_url, None, result)
+        return BriefResult(
+            brief_id=run_id, brief=context.brief, questions=context.questions,
+            required=[q.id for q in briefing.unanswered], answers=context.answers,
+            mandate_gaps=context.gaps, approval_text=approval, problems=briefing.problems,
+        )
+
     async def run(self, request: WebTaskRequest, progress: Optional[ProgressFn] = None) -> WebTaskResult:
         run_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
@@ -161,22 +202,43 @@ class WebTaskService:
         if not start_url:
             return self._failed(run_id, started, "Every origin is a wildcard, so start_url is required.")
 
-        config = self.config.model_copy(deep=True)
-        if request.max_steps:
-            config.agent.max_steps = request.max_steps
+        brief = None
+        if request.brief_id:
+            try:
+                record = self._load(request.brief_id)
+            except ValueError as e:
+                return self._failed(run_id, started, str(e))
+            if record["task"] != request.task:
+                return self._failed(run_id, started, "That brief_id is for a different task; call brief_task again.")
+            stored = record["result"].get("brief")
+            brief = TaskBrief.model_validate(stored) if stored else None
 
         async with self._slots:
-            ui = ServerUI(progress, self.approve_confirmations, config.agent.max_steps)
-            orchestrator = Orchestrator(config, shared_state=ui, mandate=mandate)
-            if self._prepare:
-                self._prepare(orchestrator, request)
-            if request.values:
-                orchestrator.planner = ValueRequestingPlanner(orchestrator.planner, request.values)
-            agent_result = await orchestrator.run(request.task, start_url=start_url)
+            orchestrator = self._orchestrator(request, mandate, progress)
+            agent_result = await orchestrator.run(
+                request.task, start_url=start_url, notes=request.notes,
+                requested_values=request.values, brief=brief, answers=request.answers,
+            )
 
         result = self._result(run_id, request, agent_result, time.monotonic() - started)
         self._save(run_id, request, mandate, start_url, agent_result, result)
         return result
+
+    def _orchestrator(
+        self, request: WebTaskRequest, mandate: Mandate, progress: Optional[ProgressFn],
+    ) -> Orchestrator:
+        config = self.config.model_copy(deep=True)
+        if request.max_steps:
+            config.agent.max_steps = request.max_steps
+        # Nobody can be asked mid-call, so "ask" returns unanswered questions instead of running.
+        config.agent.questions = request.on_questions
+        ui = ServerUI(progress, self.approve_confirmations, config.agent.max_steps)
+        orchestrator = Orchestrator(config, shared_state=ui, mandate=mandate)
+        if self._prepare:
+            self._prepare(orchestrator, request)
+        if request.values:
+            orchestrator.planner = ValueRequestingPlanner(orchestrator.planner, request.values)
+        return orchestrator
 
     def get_run(self, run_id: str, include_page_text: bool = False) -> RunDetails:
         record = self._load(run_id)
@@ -246,7 +308,10 @@ class WebTaskService:
             run_id=run_id,
             done=agent.success,
             verified=verified,
-            summary=self._summary(agent.success, verified, receipts, blocked, agent.error),
+            summary=self._summary(
+                agent.success, verified, receipts, blocked, agent.error,
+                needs_input=agent.needs_input, problems=agent.problems,
+            ),
             values=values,
             answer=agent.answer if request.include_page_text else None,
             receipts=receipts,
@@ -255,13 +320,28 @@ class WebTaskService:
             steps=agent.steps_taken,
             seconds=round(seconds, 1),
             error=sanitize(agent.error) if agent.error else None,
+            needs_input=agent.needs_input,
+            brief_id=run_id if agent.brief else None,
+            brief=agent.brief,
+            questions=agent.questions,
+            answers=agent.answers,
+            mandate_gaps=agent.gaps,
         )
 
     @staticmethod
     def _summary(
         done: bool, verified: bool, receipts: list[ReceiptSummary],
         blocked: list[BlockedAction], error: Optional[str],
+        needs_input: bool = False, problems: Sequence[str] = (),
     ) -> str:
+        if needs_input:
+            parts = [
+                "Not started: the task needs answers first. Call web_task again with brief_id and "
+                "answers to the questions, or with on_questions='assume'."
+            ]
+            if problems:
+                parts.append("Answers that didn't fit: " + "; ".join(problems) + ".")
+            return " ".join(parts)
         completed = sum(r.done for r in receipts)
         if done and verified:
             parts = [f"Done and verified: all {completed} completed sub-goal(s) were proven by evidence checks."]
@@ -291,10 +371,11 @@ class WebTaskService:
 
     def _save(
         self, run_id: str, request: WebTaskRequest, mandate: Mandate, start_url: str,
-        agent: AgentResult, result: WebTaskResult,
+        agent: Optional[AgentResult], result: WebTaskResult,
     ) -> None:
+        """Save a run's record and receipts. A brief that ran nothing has no agent result."""
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        write_receipts(agent.receipts, self._receipts_path(run_id))
+        write_receipts(agent.receipts if agent else [], self._receipts_path(run_id))
         record = {
             "run_id": run_id,
             "task": request.task,
@@ -303,12 +384,12 @@ class WebTaskService:
             "mandate": mandate.model_dump(mode="json"),  # data values are excluded by the model
             "result": result.model_dump(mode="json"),
             "page_text": {
-                "answer": agent.answer,
+                "answer": agent.answer if agent else None,
                 "text_values": {
                     name: value.value for name, value in agent.values.items() if value.type == ValueType.TEXT
-                },
+                } if agent else {},
             },
-            "violations": [violation.model_dump(mode="json") for violation in agent.violations],
+            "violations": [violation.model_dump(mode="json") for violation in agent.violations] if agent else [],
         }
         self._record_path(run_id).write_text(json.dumps(record, indent=2))
 

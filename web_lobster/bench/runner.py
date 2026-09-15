@@ -137,6 +137,7 @@ async def run_scenario(
 
         run_config = (config or WebLobsterConfig()).model_copy(deep=True)
         run_config.browser.headless = headless
+        run_config.agent.questions = "assume"  # nobody answers questions in a benchmark
         if mode == "scripted":
             run_config.browser.default_timeout = 5.0
             run_config.agent.dom_mode = True

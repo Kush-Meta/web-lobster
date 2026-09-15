@@ -10,7 +10,8 @@ kept for the user but never shown to the planner, and records written before
 learnings came from trusted inputs only show the planner their task and outcome.
 
 Storage: ~/.web_lobster/memories/tasks.jsonl (one JSON record per line)
-Retrieval: Jaccard similarity on word tokens, top-k results above threshold
+Retrieval: Jaccard similarity on word tokens, top-k results above threshold,
+plus recent trusted runs on the same sites, with the steps each sub-goal took
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ logger = get_logger(__name__)
 
 MEMORY_DIR = Path.home() / ".web_lobster" / "memories"
 MEMORY_FILE = MEMORY_DIR / "tasks.jsonl"
+# Runs of other tasks on the same sites to show the planner
+MAX_SITE_RECORDS = 2
 
 
 @dataclass
@@ -53,6 +56,11 @@ class TaskRecord:
     # written before planner isolation load as False, since their learnings
     # were drawn from page-derived answers.
     trusted: bool = False
+    # Origins the run visited
+    origins: list[str] = field(default_factory=list)
+    # Per sub-goal: goal text, done, how that was decided ("evidence"/"model"), steps taken.
+    # Counts and planner-written text only, so it's safe to show a future planner.
+    goal_stats: list[dict] = field(default_factory=list)
 
 
 class TaskMemory:
@@ -115,33 +123,71 @@ class TaskMemory:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [(s, r) for s, r in scored if s >= min_similarity][:top_k]
 
-    def format_for_prompt(self, task: str, top_k: int = 3) -> Optional[str]:
-        """Format similar past tasks as a prompt block for the planner.
+    def format_for_prompt(
+        self, task: str, top_k: int = 3, origins: Optional[list[str]] = None,
+    ) -> Optional[str]:
+        """Format past experience as a prompt block for the planner.
 
-        Returns None if no relevant memories exist. Answers are never included.
+        Similar tasks come first. With origins (trusted: the mandate's sites and
+        the start page), recent trusted runs of other tasks on those sites follow,
+        so what the agent learned about a site carries over. Returns None if
+        nothing is relevant. Answers are never included.
         """
         similar = self.find_similar(task, top_k=top_k)
-        if not similar:
+        shown = {id(rec) for _, rec in similar}
+        wanted = set(origins or [])
+        same_site = [
+            rec for rec in reversed(self._records)
+            if rec.trusted and id(rec) not in shown and wanted & set(rec.origins)
+        ][:MAX_SITE_RECORDS]
+        if not similar and not same_site:
             return None
 
         lines = ["RELEVANT PAST EXPERIENCE (use as guidance, adapt as needed):"]
         for i, (score, rec) in enumerate(similar, 1):
-            status = "✓ succeeded" if rec.success else "✗ failed"
-            lines.append(f"\n[Memory {i}] (similarity: {score:.0%}) {status}")
+            lines.append(f"\n[Memory {i}] (similarity: {score:.0%}) {self._outcome(rec)}")
             lines.append(f"Task: {rec.task}")
             if not rec.trusted:
                 lines.append("(Plan details withheld: recorded before page content was kept out of planning.)")
                 continue
-            if rec.sub_goals:
-                completed_set = set(rec.completed_goals)
-                lines.append("Plan that was used:")
-                for sg in rec.sub_goals:
-                    tick = "  ✓" if sg in completed_set else "  ✗"
-                    lines.append(f"{tick} {sg}")
-            if rec.learnings:
-                lines.append(f"Key learnings: {rec.learnings}")
-
+            lines.extend(self._plan_lines(rec))
+        for rec in same_site:
+            site = sorted(wanted & set(rec.origins))[0]
+            lines.append(f"\n[Same site: {site}] {self._outcome(rec)}")
+            lines.append(f"Task: {rec.task}")
+            lines.extend(self._plan_lines(rec))
         return "\n".join(lines)
+
+    @staticmethod
+    def _outcome(rec: TaskRecord) -> str:
+        status = "✓ succeeded" if rec.success else "✗ failed"
+        return f"{status} in {rec.steps_taken} steps" if rec.trusted else status
+
+    @staticmethod
+    def _plan_lines(rec: TaskRecord) -> list[str]:
+        lines = []
+        if rec.goal_stats:
+            lines.append("Plan that was used:")
+            for stat in rec.goal_stats:
+                tick = "  ✓" if stat.get("done") else "  ✗"
+                details = []
+                steps = stat.get("steps")
+                if isinstance(steps, int):
+                    details.append(f"{steps} step" + ("" if steps == 1 else "s"))
+                basis = {"evidence": "proven", "model": "judged by a model"}.get(stat.get("basis"))
+                if basis:
+                    details.append(basis)
+                goal = str(stat.get("goal", ""))[:200]
+                lines.append(f"{tick} {goal}" + (f" ({', '.join(details)})" if details else ""))
+        elif rec.sub_goals:
+            completed_set = set(rec.completed_goals)
+            lines.append("Plan that was used:")
+            for sg in rec.sub_goals:
+                tick = "  ✓" if sg in completed_set else "  ✗"
+                lines.append(f"{tick} {sg}")
+        if rec.learnings:
+            lines.append(f"Key learnings: {rec.learnings}")
+        return lines
 
     def save(self, record: TaskRecord) -> None:
         """Persist a task record to disk."""

@@ -84,11 +84,14 @@ class Executor:
         reflection: Optional[str] = None,
         mcp_tools: Optional[list[dict]] = None,
         data_placeholders: Optional[list[str]] = None,
+        briefing: Optional[str] = None,
     ) -> Action:
         """Given the current page state and goal, pick the next action.
 
         data_placeholders names the user data a mandate grants. The model only
         ever sees {{name}}; the browser substitutes the value at typing time.
+        briefing is trusted context about the whole task: its goal, the user's
+        answers, the planner's assumptions, and the user's notes.
         """
 
         # Build effective system prompt, appending MCP tool info when available
@@ -141,7 +144,8 @@ class Executor:
                 + observation.elements_summary(max_elements=50)
             )
 
-        prompt = f"""CURRENT SUB-GOAL: {sub_goal.goal}
+        briefing_block = f"TASK BRIEF (from the user and the planner):\n{briefing}\n\n" if briefing else ""
+        prompt = f"""{briefing_block}CURRENT SUB-GOAL: {sub_goal.goal}
 SUCCESS CRITERIA: {sub_goal.success_criteria}
 ACTIONS TAKEN THIS SUB-GOAL SO FAR: {actions_taken_this_subgoal}{done_warning}{reflection_block}{data_block}
 

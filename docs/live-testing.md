@@ -66,6 +66,17 @@ What these fixes do to the guarantees:
 - These runs show a local model completing honest tasks, not how often it falls for planted instructions. The benchmark's live mode hasn't run yet.
 - Claude configs weren't run live in this round.
 
+## Thinking before acting (step 6)
+
+The same machine and model, after [step 6](design/step-6-planner-briefing.md) added a brief, questions, and plan review before the browser opens. All runs over MCP stdio.
+
+| # | Task | Tool | Outcome | Steps | Time | What it showed |
+|---|---|---|---|---|---|---|
+| 14 | "Find me a cheap round-trip flight to Tokyo", read-only mandate on google.com | `brief_task` | A brief with a sensible goal and assumptions, and **no questions** | — | 15 s | The planner assumed "current date as departure" rather than asking for dates or where the trip starts. A 7B planner under-asks: the prompt's "prefer a sensible assumption" won out over "ask what you can't sensibly assume" |
+| 15 | Latest Python 3 release on python.org, read-only mandate | `brief_task`, then `web_task` with `brief_id` | Done and verified, but **the value was "3.15"** | 0 | 70 s, plus about 11 s for the brief | The brief rightly asked nothing and was reused without rethinking. Evidence proved the downloads page was open, but the extractor read the "3.15 pre-release" row of the active-releases table instead of the 3.14.7 download (runs 8, 10, and 13 read 3.14.7). "Verified" covers the steps, not whether a text value is right. The run was also 28 s slower than run 10, from longer prompts |
+| 16 | Mount Everest's elevation from Wikipedia's main page | `web_task` | Failed | 40 | 487 s | The brief rightly asked nothing, but the plan was still four click-level steps: open the search box, type, click search, open the article. Plan review had nothing to flag, since four steps is under its limit. "Click the search button" failed its own check three times, and the article step never reached the article. Run 11 had the same plan shape and finished, so a single run is anecdote, not measurement. This run led to plan review flagging click-level steps |
+| 17 | Run 14's Tokyo task again, after the question rules changed | `brief_task` | Two questions, departure and return date, each with a default (today, and a week later) | — | 17 s | Half fixed. It now asks for the dates instead of assuming them, and nothing blocks because both have defaults. It still never asked where the trip starts, even though the prompt names that case; it didn't assume a city, it just didn't think of one. A 7B planner follows a checklist unevenly |
+
 ## Reproduce
 
 ```bash

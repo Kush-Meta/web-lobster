@@ -36,6 +36,9 @@ class ServerUI:
     async def on_plan_ready(self, plan: TaskPlan) -> None:
         await self._report(f"Plan ready: {len(plan.sub_goals)} sub-goal(s)")
 
+    async def on_brief_ready(self, brief, gaps=None) -> None:
+        await self._report(f"Thought it through: {len(brief.questions)} question(s)")
+
     async def on_subgoal_start(self, sub_goal: SubGoal) -> None:
         await self._report(f"Working on: {sub_goal.goal}")
 
@@ -75,11 +78,16 @@ class ValueRequestingPlanner:
     def __init__(self, planner, specs: list[ValueSpec]):
         self._planner = planner
         self._specs = specs
+        # Offer thinking and plan revision only when the wrapped planner does.
+        if hasattr(planner, "brief"):
+            self.brief = planner.brief
+        if hasattr(planner, "revise"):
+            self.revise = self._revise
 
     async def plan(
-        self, task: str, memory_context: Optional[str] = None, start_url: Optional[str] = None,
+        self, task: str, context: Optional[str] = None, start_url: Optional[str] = None,
     ) -> TaskPlan:
-        plan = await self._planner.plan(task, memory_context, start_url)
+        plan = await self._planner.plan(task, context, start_url)
         if plan.sub_goals:
             plan.sub_goals[-1] = self._with_values(plan.sub_goals[-1])
         return plan
@@ -92,6 +100,12 @@ class ValueRequestingPlanner:
 
     async def extract_learnings(self, **kwargs) -> str:
         return await self._planner.extract_learnings(**kwargs)
+
+    async def _revise(self, *args, **kwargs) -> list[SubGoal]:
+        goals = await self._planner.revise(*args, **kwargs)
+        if goals:
+            goals[-1] = self._with_values(goals[-1])
+        return goals
 
     def _with_values(self, goal: SubGoal) -> SubGoal:
         declared = {spec.name for spec in goal.extract}
