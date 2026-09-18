@@ -89,3 +89,39 @@ def test_granted_data_entered_through_select_is_approved_by_the_mandate(sites):
     assert not orchestrator._mandate_approves(
         Action(action=ActionType.CLICK, element_id=1), f"{a.origin}/form"
     )
+
+
+async def _typed_events(site, path: str, label: str, text: str) -> list[str]:
+    controller = await _open(site, path)
+    try:
+        typed = await controller.execute(Action(
+            action=ActionType.TYPE, element_id=await _element_id(controller, label), text=text,
+        ))
+        assert typed is True
+        events = await controller._page.evaluate("window.__events")
+        return [value for value in events if value]  # the clearing step fires an empty one
+    finally:
+        await controller.close()
+
+
+async def test_an_autocomplete_field_gets_the_text_in_one_go(sites):
+    a, _ = sites
+    # Key-by-key typing races the field's own inline completion: live, "Tokyo"
+    # became "TokTokyoyo" on Google Flights.
+    assert await _typed_events(a, "/combobox", "City", "Tokyo") == ["Tokyo"]  # one event, not five
+
+
+async def test_a_plain_field_still_gets_each_keystroke(sites):
+    a, _ = sites
+    events = await _typed_events(a, "/plainfield", "Notes", "Tokyo")
+    assert events == ["T", "To", "Tok", "Toky", "Tokyo"]
+
+
+async def test_elements_under_an_overlay_are_not_offered(sites):
+    a, _ = sites
+    controller = await _open(a, "/covered")
+    try:
+        observation = await controller.observer.observe(include_screenshot=False, extract_dom=True)
+    finally:
+        await controller.close()
+    assert [el.label for el in observation.elements] == ["City"]  # only the one on top

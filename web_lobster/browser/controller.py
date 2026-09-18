@@ -106,6 +106,26 @@ _CLEAR_FOCUSED_INPUT_JS = """
 """
 
 
+# True when the focused field completes text as you type (aria-autocomplete), where
+# key-by-key typing races the browser's own completions.
+_INLINE_AUTOCOMPLETE_JS = """() => {
+  const el = document.activeElement;
+  if (!el) return false;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  const auto = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+  return auto === 'inline' || auto === 'both' || (role === 'combobox' && auto !== 'none');
+}"""
+
+# Where to click to take a combobox's first suggestion, if it is showing one.
+_FIRST_SUGGESTION_JS = """() => {
+  const options = [...document.querySelectorAll('[role="option"]')].filter(o => o.offsetParent);
+  if (!options.length) return null;
+  const rect = options[0].getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return null;
+  return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: (options[0].innerText || '').slice(0, 80)};
+}"""
+
+
 class BrowserController:
     """Manages a Playwright browser instance and executes actions."""
 
@@ -292,9 +312,12 @@ class BrowserController:
         # Resolve placeholders against the page as it is now, after the focusing
         # click, which may itself have navigated.
         text = self._resolve_text(text)
-        if self.enforcer and self.enforcer.contains_grant(text):
-            # One input event carrying the whole value: typed key by key, page
-            # scripts could leak it as prefixes too short to recognise.
+        inline = await self._page.evaluate(_INLINE_AUTOCOMPLETE_JS)
+        if inline or (self.enforcer and self.enforcer.contains_grant(text)):
+            # One input event carrying the whole value. A granted value typed key by
+            # key could leak as prefixes too short to recognise, and a field that
+            # completes inline (Google Flights' city boxes) interleaves its own
+            # completions with the keystrokes: "Tokyo" became "TokTokyoyo" live.
             await self._page.keyboard.insert_text(text)
         else:
             # Type character-by-character so autocomplete listeners fire on each keystroke.
@@ -358,8 +381,24 @@ class BrowserController:
 
         logger.info("select_on_combobox", element_id=element_id)
         await self._type(element_id, text)
-        await asyncio.sleep(0.5)  # let the suggestion list render
-        await self._page.keyboard.press("Enter")
+        if not await self._take_suggestion():
+            # No list appeared: Enter is what these widgets accept otherwise.
+            await self._page.keyboard.press("Enter")
+
+    async def _take_suggestion(self, attempts: int = 6) -> bool:
+        """Click the first suggestion a combobox offers. False when none appears.
+
+        Choosing an option is what commits these widgets; typing alone leaves the
+        text uncommitted, and the next click throws it away.
+        """
+        for _ in range(attempts):
+            await asyncio.sleep(0.25)
+            spot = await self._page.evaluate(_FIRST_SUGGESTION_JS)
+            if spot:
+                await self._page.mouse.click(spot["x"], spot["y"])
+                logger.info("suggestion_taken", text=str(spot.get("text", ""))[:60])
+                return True
+        return False
 
     async def _hover(self, element_id: Optional[int]) -> None:
         if element_id is None:

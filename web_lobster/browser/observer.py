@@ -54,6 +54,17 @@ EXTRACT_ELEMENTS_JS = """
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
 
+        // Skip what a person couldn't click: something else is painted over its
+        // centre. Sites like Google Flights render several identical "Where to?"
+        // inputs, and typing into a covered one silently does nothing. When the
+        // check can't tell (off-screen, or nothing hit), the element is kept.
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        if (cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight) {
+            const onTop = document.elementFromPoint(cx, cy);
+            if (onTop && onTop !== el && !el.contains(onTop) && !onTop.contains(el)) continue;
+        }
+
         // Check if element is in viewport (with some buffer)
         const inViewport = rect.top < window.innerHeight + 200 &&
                           rect.bottom > -200 &&

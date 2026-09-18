@@ -97,7 +97,22 @@ Run 23 is the first live test of a site that isn't a document, and it found both
 - **The brief asked what runs 14 and 17 never did:** "What city are you departing from?", with New York as the default. The planner's question set varies between runs, so under-asking isn't constant.
 - **`select` couldn't drive an autocomplete.** Google Flights' city fields are `role="combobox"` widgets, not `<select>` elements. The executor reasonably chose `select` for them, and `select` called Playwright's `select_option`, which only works on a real `<select>`. Every attempt raised an error and cost a step, so the search was never run and the task burned all 40 steps. The typing path already knew how to drive these widgets: it clicks, waits for the inner input to mount, clears it through React's setter, and types character by character so the autocomplete fires.
 
+Driving the page by hand afterwards showed two more problems behind the first one:
+
+- **Those fields complete text inline as you type.** Typing "Tokyo" character by character, as the controller did, raced the field's own completions and left "TokTokyoyo" in the box. With garbage in the field no suggestion matched, so nothing could be chosen.
+- **The page renders several identical inputs.** "Where to?" existed twice on a fresh page, and eight "Where…" inputs appeared after a few interactions, only one of them live. Typing into a dead one does nothing and reports no error, which fits run 23 entering both cities three times with no effect.
+- **Committing needs a suggestion.** These widgets only accept a city once an option from the `role="option"` list is chosen. Enter alone does nothing when no option matches.
+
 **Fixed:** `select` uses the browser's picker on a real `<select>`, and otherwise types the text and takes the suggestion with Enter. The guards that cover typing now cover `select` too: the mandate's data-entry check already did, and the safety gate's sensitive-field check and the mandate-approves path were extended to match. `tests/sites.py` gained a real dropdown and a Google-Flights-style autocomplete to test both paths.
+
+Typing into a field that completes inline now goes in as one insertion rather than key by key, and `select` takes the first suggestion by clicking it, falling back to Enter. The observer skips elements covered by something else, keeping them whenever the check can't tell. Plain typing deliberately still does **not** commit a suggestion, so the measured Wikipedia and python.org tasks keep behaving as they did.
+
+| # | Task | Path | Outcome | Steps | Time | What it showed |
+|---|---|---|---|---|---|---|
+| 24 | Eiffel, python.org, and Everest, one run each, after the typing and observer fixes | `trials` | All three right **and verified** | 0 / 0 / 5 | 55 / 78 / 130 s | No regression from hiding covered elements. python.org came back verified, where the first comparison managed 1 of 3. One run each, so this is a check, not a measurement |
+| 25 | Tokyo again, with all three fixes | CLI, no mandate | Failed | 27 | 469 s | 18 clicks and 9 types, and **no `select` at all**, so the suggestion-commit path never ran. The executor keeps choosing `type` for these fields, and `type` doesn't commit by design |
+
+**What's still in the way:** the gesture that commits an autocomplete lives only on `select`, and a 7B executor reaches for `type`. Making `type` commit whenever a combobox is showing suggestions would likely fix Google Flights, but it changes what typing means everywhere, including the Wikipedia search step in the measured Everest task. That's a change to make with the trials tool, not by assumption.
 
 ## Measured with `web-lobster trials` (step 7)
 

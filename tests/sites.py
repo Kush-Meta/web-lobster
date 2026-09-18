@@ -53,26 +53,47 @@ def build_sites() -> tuple[Site, Site]:
             '<script>document.querySelector("select").addEventListener("change", e => {'
             ' document.getElementById("chosen").textContent = "Chosen: " + e.target.value; });</script>'
         ),
-        # A Google-Flights-style autocomplete: typing filters suggestions, Enter takes the first.
+        # A Google-Flights-style autocomplete: it completes inline, offers options,
+        # and only commits when one is chosen. Every input event is recorded so a
+        # test can tell one-shot insertion from key-by-key typing.
         "/combobox": html(
-            '<input role="combobox" aria-label="City" autocomplete="off">'
+            '<input role="combobox" aria-autocomplete="inline" aria-label="City" autocomplete="off">'
             '<ul id="suggestions"></ul><p id="chosen"></p>'
             '<script>'
+            'window.__events = [];'
             'const cities = ["New York", "Newark", "Tokyo"];'
             'const input = document.querySelector("input");'
             'const list = document.getElementById("suggestions");'
+            'const commit = text => {'
+            '  document.getElementById("chosen").textContent = "Chosen: " + text;'
+            '  list.innerHTML = "";'
+            '};'
             'input.addEventListener("input", () => {'
+            '  window.__events.push(input.value);'
             '  const q = input.value.trim().toLowerCase();'
             '  list.innerHTML = q ? cities.filter(c => c.toLowerCase().startsWith(q))'
-            '    .map(c => "<li>" + c + "</li>").join("") : "";'
+            '    .map(c => "<li role=\'option\'>" + c + "</li>").join("") : "";'
+            '});'
+            'list.addEventListener("click", e => {'
+            '  if (e.target.getAttribute("role") === "option") commit(e.target.textContent);'
             '});'
             'input.addEventListener("keydown", e => {'
-            '  if (e.key === "Enter" && list.firstChild) {'
-            '    document.getElementById("chosen").textContent = "Chosen: " + list.firstChild.textContent;'
-            '    list.innerHTML = "";'
-            '  }'
+            '  if (e.key === "Enter" && list.firstChild) commit(list.firstChild.textContent);'
             '});'
             '</script>'
+        ),
+        # A plain field, for contrast: no autocomplete, so typing stays key by key.
+        "/plainfield": html(
+            '<input aria-label="Notes">'
+            '<script>window.__events = [];'
+            'document.querySelector("input").addEventListener("input", e => window.__events.push(e.target.value));'
+            '</script>'
+        ),
+        # Two identical fields, one behind a full-page overlay: only the top one is real.
+        "/covered": html(
+            '<input aria-label="City" id="under">'
+            '<div style="position:fixed;top:0;left:0;right:0;bottom:0;background:#eee">'
+            '<input aria-label="City" id="over"></div>'
         ),
         "/fake-success": html("<h1>Booking confirmed</h1><p>Nothing was actually booked.</p>"),
         "/beacon": html('<p>Reading</p><script>navigator.sendBeacon("/api/analytics", "event")</script>'),
