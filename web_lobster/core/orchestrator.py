@@ -547,6 +547,7 @@ class Orchestrator:
                 violations=self._violations(),
                 values=dict(self.state.values),
                 receipts=list(self.receipts.receipts),
+                actions=self._action_trail(),
                 **self._briefing_fields(),
             )
 
@@ -570,6 +571,7 @@ class Orchestrator:
                 violations=self._violations(),
                 values=dict(self.state.values),
                 receipts=list(self.receipts.receipts),
+                actions=self._action_trail(),
                 **self._briefing_fields(),
             )
         finally:
@@ -592,6 +594,7 @@ class Orchestrator:
         # Accumulated reflections: persist across multiple stuck-then-retry cycles
         # so the model never loses the diagnostic history of this sub-goal.
         reflections: list[str] = []
+        went_back_from_nothing = False
 
         proven, self._proven_by_skip = self._proven_by_skip is sub_goal, None
         if (proven or await self._already_there(sub_goal)) and await self._verify(
@@ -628,6 +631,28 @@ class Orchestrator:
                 if observation.url.startswith(("http://", "https://")):
                     self._visited_origins.add(origin_of(observation.url))
                 await self._ui_emit("on_observation", observation)
+
+                # --- A PAGE WITH NOTHING ON IT ---
+                # A guessed URL can land on a page with no elements and no text,
+                # and the executor then picks elements that aren't there for the
+                # rest of its budget: 35 steps of it in live run 28. Go back once,
+                # and if that isn't better, end the attempt so the plan can change.
+                # Only without a screenshot: a vision model can work a page that
+                # is all canvas or image, where there is nothing to read or click.
+                if dom_mode and not observation.elements and not (observation.page_text or "").strip():
+                    logger.warning("empty_page", url=observation.url)
+                    if went_back_from_nothing:
+                        reflections.append(
+                            f"{observation.url} has nothing on it, and going back didn't help. "
+                            "The URL is probably wrong."
+                        )
+                        break
+                    went_back_from_nothing = True
+                    await self.browser.execute(Action(action=ActionType.GO_BACK))
+                    self.state.action_history.append(
+                        Action(action=ActionType.GO_BACK, reason="Nothing on the page")
+                    )
+                    continue
 
                 # --- LOGIN DETECTION ---
                 if observation.login_detected and not getattr(self, "_login_alerted", False):
@@ -820,6 +845,7 @@ class Orchestrator:
             page_text=await self.browser.page_text(),
             events=[],
             values=dict(self.state.values),
+            page_status=self.browser.page_status,
         )
         return all(evaluate(check, context).passed for check in checks)
 
@@ -942,6 +968,7 @@ class Orchestrator:
                     page_text=await self.browser.page_text(),
                     events=self.browser.network.since(self._goal_network_start),
                     values={**self.state.values, **read},
+                    page_status=self.browser.page_status,
                 )
                 checks = [evaluate(check, context) for check in sub_goal.evidence]
                 achieved = all(check.passed for check in checks)
@@ -1174,6 +1201,35 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "plan_issues": list(self._plan_issues),
         }
 
+    def _action_trail(self) -> list[str]:
+        """One line per action taken, for reading a failed run afterwards.
+
+        Blocked and declined actions are in here too, as the WAIT entries the
+        executor was given, which is usually what a stuck run needs explaining.
+        Text is redacted, since a typed action can carry a granted value.
+        """
+        return [
+            f"{step}. {self._action_line(act)}"
+            for step, act in enumerate(self.state.action_history, start=1)
+        ]
+
+    def _safe(self, value: str) -> str:
+        return (self.enforcer.redact(value) if self.enforcer else value)[:120]
+
+    def _action_line(self, act: Action) -> str:
+        parts = [act.action.value]
+        if act.element_id is not None:
+            parts.append(f"(el={act.element_id})")
+        if act.mcp_tool_name:
+            parts.append(act.mcp_tool_name)
+        if act.text:
+            parts.append(f'"{self._safe(act.text)}"')
+        if act.url:
+            parts.append(self._safe(act.url))
+        if act.reason:
+            parts.append(f"({self._safe(act.reason)})")
+        return " ".join(parts)
+
     async def _request_confirmation(self, action: Action, reason: str) -> bool:
         """Request user confirmation for a high-risk action.
 
@@ -1211,6 +1267,7 @@ class AgentResult:
         gaps: Optional[list[str]] = None,
         plan_issues: Optional[list[str]] = None,
         problems: Optional[list[str]] = None,
+        actions: Optional[list[str]] = None,
     ):
         self.success = success
         self.task = task
@@ -1232,6 +1289,8 @@ class AgentResult:
         self.gaps = gaps or []
         self.plan_issues = plan_issues or []
         self.problems = problems or []
+        # What the executor actually did, for reading a failed run afterwards.
+        self.actions = actions or []
 
     def summary(self) -> str:
         status = "? NEEDS INPUT" if self.needs_input else "✓ SUCCESS" if self.success else "✗ FAILED"

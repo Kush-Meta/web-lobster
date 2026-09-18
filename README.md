@@ -120,8 +120,10 @@ Getting good results:
 
 What doesn't work yet:
 
-- **Signed-in sites.** Every task starts with a fresh browser profile.
+- **Staying signed in.** Every task starts with a fresh browser profile, so a session never carries over. Signing in during a task does work — a mandate grants a username and password as `{{placeholders}}` the model never sees, and neither ever appears in a run record — and after the run-28 fixes it went 3 of 3 on a practice site. Persistent profiles are designed ([docs/design/step-8-signed-in-tasks.md](docs/design/step-8-signed-in-tasks.md)) but not built.
 - **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops URL checks that spell out query strings and separate "extract" steps. It counts an "open the page" step as done when the browser is already provably there, and when a step fails after carrying the browser to a later step's page, it skips ahead instead of replanning. In three repeated Everest runs after that, all three found the right answer, two of them in under three minutes. Other multi-page flows and forms have only been tried once each on local models, so treat them as hit or miss. `configs/claude.yaml` gives the planner far more to work with, but it hasn't been run against live sites yet.
+- **Pages you have to drive**, like a flight search. Choosing from an autocomplete works, but only through `select`, and a 7B executor reaches for `type` on those fields. Making `type` commit the suggestion was measured over nine runs and reverted: it broke the searches that were working and fixed nothing ([notes](docs/live-testing.md#making-type-commit-measured-then-reverted)).
+- **Values that mean "the first one" in a list.** Asked for the newest commit on a GitHub commits page, two runs returned a real commit from the middle of it, and both came back verified. A shape check can't catch a value that's well formed, on the right page, and wrong only in its position.
 - **Pages that only make sense as images** (charts, canvas apps) on the text-only local config. Use a vision model for the executor and validator there.
 
 Mandate block counts include each page's own analytics and error reporting. MCP results flag those as `background`, and the agent is only told about blocks its own actions could have caused.

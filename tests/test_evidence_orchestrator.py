@@ -142,6 +142,46 @@ async def test_open_page_goal_already_met_takes_no_steps(sites, tmp_path):
     assert receipt.achieved and receipt.basis == "evidence"
 
 
+async def test_a_guessed_url_that_404s_does_not_prove_the_page(sites, tmp_path):
+    a, _ = sites
+    # Live, a 7B planner sent two runs to saucedemo.com/login.html, which doesn't
+    # exist. The url check passed on the 404, and the executor then had an empty
+    # page to work with for the rest of its step budget.
+    goal = SubGoal(id=1, goal="Open the login page", success_criteria="The login page is open",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/login.html")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+
+    result = await orchestrator.run("Sign in", start_url=f"{a.origin}/login.html")
+    _skip_without_chromium(result)
+
+    assert not result.success
+    [receipt] = result.receipts
+    assert not receipt.achieved
+    assert "answered 404" in receipt.checks[0].detail
+
+
+async def test_a_page_with_nothing_on_it_ends_the_attempt(sites, tmp_path):
+    a, _ = sites
+    # Live run 28 landed on an empty page and spent 35 of its 40 steps choosing
+    # elements that weren't there. One step back, then let the plan change.
+    goal = SubGoal(id=1, goal="Sign in", success_criteria="Signed in",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/confirmation/*")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(
+        return_value=Action(action=ActionType.CLICK, element_id=1, reason="the login button")
+    )
+
+    result = await orchestrator.run("Sign in", start_url=f"{a.origin}/nothing")
+    _skip_without_chromium(result)
+
+    assert not result.success
+    # Well short of max_actions_per_subgoal (30) for even one attempt.
+    assert result.steps_taken < 10, result.actions
+    assert any("go_back" in line for line in result.actions)
+    orchestrator.executor.decide.assert_not_called()
+
+
 async def test_goal_that_acts_on_the_page_still_runs_when_its_url_already_matches(sites, tmp_path):
     a, _ = sites
     goal = SubGoal(id=1, goal=TASK, success_criteria="Booking is confirmed",

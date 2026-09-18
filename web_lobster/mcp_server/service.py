@@ -402,6 +402,8 @@ class WebTaskService:
                 } if agent else {},
             },
             "violations": [violation.model_dump(mode="json") for violation in agent.violations] if agent else [],
+            # Redacted in the orchestrator; a run that failed is read from here.
+            "actions": agent.actions if agent else [],
         }
         self._record_path(run_id).write_text(json.dumps(record, indent=2))
 

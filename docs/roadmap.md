@@ -32,7 +32,7 @@ Live, with a local 7B model on a 16 GB Mac ([notes](live-testing.md)): lookups t
 - **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules, for example a rebooking date that must match a typed value from the task.
 - **Live models.** Measurements so far are a handful of runs per task on one local 7B model ([notes](live-testing.md)). A text value can be wrong while the run counts as verified (run 15), search steps are judged by a model, and Claude configs haven't been run live. The benchmark's live mode hasn't run either, so how often a real model falls for a planted instruction is still unmeasured.
 - **Interactive sites.** Choosing from an autocomplete works, but only through `select`, and a 7B executor reaches for `type` on those fields. Making `type` commit the suggestion was measured over nine runs and reverted: it cost the Everest task every run it had been winning, and still didn't get Google Flights to search ([notes](live-testing.md#making-type-commit-measured-then-reverted)). Next: get the executor to pick `select` on a combobox.
-- **Login.** Tasks start with a fresh browser profile, so signed-in tasks don't work ([design](design/step-8-signed-in-tasks.md)).
+- **Login.** Tasks start with a fresh browser profile, so no session carries over between runs. Signing in inside a run works, 3 of 3 on a practice site after the run-28 fixes, with the credentials granted as `{{placeholders}}` ([design](design/step-8-signed-in-tasks.md) for persistent profiles, not built).
 - **Dashboard.** The web dashboard asks the planner's questions, but doesn't accept mandates or notes, or show receipts.
 - **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.
 
@@ -42,7 +42,7 @@ Based on live runs 14 to 21 ([notes](live-testing.md)). Each phase says what fin
 
 ### Phase 1: make results measurable and trustworthy
 
-*Status:* items 1 to 4 are built (`f3c959d`). The first trials comparison found two more problems, added below as items 5 and 6.
+*Status:* items 1 to 4 are built (`f3c959d`). The first trials comparison found two more problems, added below as items 5 and 6, and a GitHub lookup found a third: item 7, a run that was verified and wrong.
 
 1. **A repeat-run tool.** Run a task N times against a known answer and report the success rate, the correct-value rate, and median steps and time. Every later change is judged with it. *Done when* a live trial of a task is one command, and its report goes into the notes.
 2. **Shape checks on values.** A `pattern`, `min` and `max`, or an allowed list on requested values, enforced in code, so a misread like run 15's "3.15" can't come back as verified. *Done when* a value that fails its shape is rejected in a test and in a live rerun.
@@ -50,6 +50,7 @@ Based on live runs 14 to 21 ([notes](live-testing.md)). Each phase says what fin
 4. **Evidence for search steps.** Every Everest run had its search step judged by a model, so none came back fully verified. Search-shaped steps should get a checkable outcome where the page allows one. *Done when* repeated Everest runs come back verified.
 5. **Guessed text checks.** In the trials, the 7B planner gave the article step a text check for "elevation of Mount Everest is", a phrase Wikipedia never shows, and two runs failed on the right page. Sentence-like text checks next to a url check that already pins the page should be treated as guesses, the way guessed search URLs are. *Done when* a parsing test covers it and repeated 7B Everest runs recover.
 6. **The caller's value checks win.** When the planner declares a value with the same name as one the caller requested, the caller's `pattern`, `min`, and `max` are dropped; it happened in two of three python.org trials. *Done when* a test shows the caller's checks apply either way.
+7. **Values that mean "the first one".** Asked for the newest commit on a GitHub commits page, both runs returned a real commit from the middle of the list, and both came back verified (run 29). Shape checks can't catch it: the value is well formed, from the right page, and only wrong in its position. A value should be able to say it's the first match in the page's order, and be read that way in code. *Done when* the GitHub task comes back right, and a wrong-position value is rejected in a test.
 
 ### Phase 2: a stronger planner
 

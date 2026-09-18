@@ -74,6 +74,19 @@ class TestUrlCheck:
         assert not result.passed
         assert result.type == "url"
 
+    def test_an_error_page_is_not_the_page(self):
+        # A guessed URL lands on a 404 that matches the pattern it guessed:
+        # live, saucedemo.com/login.html doesn't exist, and the check passed.
+        result = evaluate(UrlCheck(pattern=f"{SHOP}/confirmation/*"), _context(page_status=404))
+        assert not result.passed
+        assert "answered 404" in result.detail
+
+    def test_an_unknown_status_still_passes(self):
+        # Nothing was navigated during this sub-goal, so there's nothing to hold
+        # against the page.
+        assert evaluate(UrlCheck(pattern=f"{SHOP}/confirmation/*"), _context(page_status=None)).passed
+        assert evaluate(UrlCheck(pattern=f"{SHOP}/confirmation/*"), _context(page_status=200)).passed
+
 
 class TestRequestCheck:
     def test_needs_method_url_and_success_status(self):

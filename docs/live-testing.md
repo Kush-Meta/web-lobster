@@ -134,6 +134,62 @@ Driving Wikipedia by hand afterwards showed why it engaged there at all. The sea
 
 **Reverted.** Committing a suggestion stays on `select`, where every known task came back right and verified. `tests/test_select_action.py` now pins the decision from both sides: `select` takes the suggestion, `type` deliberately leaves the field uncommitted. Google Flights stays unsolved by design — the executor prefers `type` for these fields, and making `type` commit costs three known tasks to fix one unknown. The next thing to try is the other end: teaching the executor to reach for `select` on a combobox, which changes one model's choice rather than what typing means everywhere.
 
+### Three harder tasks (2026-09-18)
+
+Tasks chosen to be less like reading an encyclopedia: a site you have to drive, a site you have to sign in to, and a page whose answer is one item in a list of near-identical ones.
+
+| # | Task | Runs | Outcome | Steps | Time |
+|---|---|---|---|---|---|
+| 27 | Tokyo again, with notes about how Google Flights works, supplied by the user | 1 | Failed | 40 | 477 s |
+| 28 | Sign in to saucedemo.com and read a product price, with the credentials as `{{placeholders}}` from the environment | 4 | 1/4 done | 40 | 124 s |
+| 28b | The same, after the two fixes below | 3 | **3/3 done and right**, 1/3 verified | 35 | 158 s |
+| 29 | The newest commit on this repository's `main` branch, from GitHub's commits page | 2 | 2/2 done and **verified**, both values **wrong** | 0 | 35 s |
+
+**27 — the notes fixed the planning, and planning wasn't the problem.** With the user's notes in the brief, the 7B planner wrote a one-step plan — "Search Google Flights for a round-trip from New York to Tokyo on \<dates\>" — with real, checkable evidence: `page text contains "Flight results"`. That is the best plan any config has produced for that site, and it's the answer to whether user-supplied notes help: they do, at the step where they're read. The brief's own thinking had absorbed them — "clear the default departure city, type in 'Tokyo', and select the matching suggestion" — which is the site's actual gesture, not a generic plan. The run still failed, because the executor couldn't get the search to run. The wall is the one the reverted change was aimed at, and it's in the executor, not the plan.
+
+**28 — signing in works, and a guessed URL is what breaks it.** One run in three signed in with `{{username}}` and `{{password}}`, opened the Sauce Labs Backpack, and returned `backpack_price` 29.99, right and verified, in 36 steps (7 in a later run). Neither the username nor the password appears anywhere in the run records. The failures were all the same failure, and reading them is what the action trail was added for:
+
+```
+1. navigate https://www.saucedemo.com/login.html
+2. wait
+...
+5. wait (element_id 1 not on page (valid: []))
+6. wait (element_id 2 not on page (valid: []))
+```
+
+`https://www.saucedemo.com/login.html` doesn't exist — the login form is at `/`, where the run already started. The planner guessed the URL, its url check demanded it, and the browser went. What happens next is worth spelling out, because it defeats the obvious fix:
+
+1. The server answers **404**.
+2. The 404 page is a single-page-app fallback: it redirects to `/?/login.html`, which answers **200**, and rewrites the address back to `/login.html`.
+3. So the browser sits at exactly the URL the planner guessed, with a 200 status, and **nothing rendered**.
+
+The url check passed — right address, no error — and the executor then chose elements that weren't there for 35 of the remaining steps, because the observation was empty every time.
+
+**Two fixes, and only the second one would have caught this.**
+
+- The browser records the status its own document answered, and a url check fails on an error page: "page is at …/login.html, which answered 404". A status that isn't known — no navigation during that sub-goal — still passes, so nothing that worked before changes. This closes a real hole: a url check proved an address, not a page. It does **not** close saucedemo's, because that redirect leaves a 200 behind.
+- An observation with no elements and no text ends the attempt. The agent goes back one page; if that page is empty too, the sub-goal fails and the plan changes, instead of 35 steps of choosing elements that aren't there.
+
+The test site gained both shapes: a `/login.html` that 404s, and a `/nothing` that answers 200 with an empty body.
+
+**Measured after the fixes: 3 of 3 done and right**, against 1 of 4 before, with one run fully verified and the other two carrying a model-judged sub-goal. Two of the three runs guessed `/login.html` again, and the trail shows the recovery working:
+
+```
+1. navigate https://www.saucedemo.com/login.html
+2. go_back (Nothing on the page)
+3. navigate https://www.saucedemo.com/login.html
+4. go_back (Nothing on the page)
+5. type (el=1) "{{username}}"
+6. type (el=2) "{{password}}"
+7. click (el=3)
+```
+
+`secret_sauce` appears in none of the run records, in any of the seven runs.
+
+**No regression on the known tasks** after both fixes: Eiffel, python.org, and Everest each came back right in one run, two of the three verified (0, 0, and 8 steps; 50, 76, and 175 s). Everest's search step was judged by a model that run, which is the usual 7B variance rather than anything new.
+
+**29 — a verified run with the wrong answer, which is the failure that matters most.** Both runs opened the commits page, passed their url check, and returned `latest_commit` as "Fix premature done, broken replan loop, and add answer extraction", a real commit from weeks earlier, sitting in the middle of the same page. The newest one was "Type into autocompletes in one go, and hide covered elements". This is exactly what shape checks can't catch: the value is a well-formed commit subject, from the right page, of the right type. Nothing about it is malformed — it's just not the newest, and "newest" is a property of where it sits in the list, which is what flattening the page to text throws away. A value that means "the first one" needs to be read positionally, not described to a model in prose.
+
 ## Measured with `web-lobster trials` (step 7)
 
 The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.

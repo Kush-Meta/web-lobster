@@ -138,6 +138,7 @@ class BrowserController:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
+        self._page_status: Optional[int] = None  # what the current document answered
         self.observer: Optional[Observer] = None
         # Set by the orchestrator before each execute() call so the controller
         # can use stored bbox/stable_selector for coordinate-based clicking.
@@ -167,6 +168,7 @@ class BrowserController:
         if self.enforcer:
             await self.enforcer.attach(self._context)
         self._page = await self._context.new_page()
+        self._page.on("response", self._note_page_status)
         self.observer = Observer(self._page, self.config)
 
         if start_url != "about:blank":
@@ -479,9 +481,28 @@ class BrowserController:
         text = self.enforcer.redact(text) if self.enforcer else text
         return text[:limit] if limit else text
 
+    def _note_page_status(self, response) -> None:
+        """Remember what the page itself answered, so a 404 can't pass for a page.
+
+        Only the main frame's own document counts: a sub-resource's 404 says
+        nothing about whether the agent is where it thinks it is.
+        """
+        request = response.request
+        if request.resource_type == "document" and request.frame == self._page.main_frame:
+            self._page_status = response.status
+
     @property
     def current_url(self) -> str:
         return self._page.url if self._page else ""
+
+    @property
+    def page_status(self) -> Optional[int]:
+        """The HTTP status the current page answered, or None if it isn't known.
+
+        A client-side route change leaves the last document's status in place,
+        which is right: the document is still the one the server sent.
+        """
+        return self._page_status
 
     async def close(self) -> None:
         if self._context:

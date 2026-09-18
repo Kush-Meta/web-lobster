@@ -125,6 +125,8 @@ Two more surfaced in the trials comparison (sections 4 and 5).
 | 12 | Verified, with no answer at all: the run finished before observing any page | The answer is read from the live page either way |
 | 15 | Verified, with "3.15" as the latest Python release. Evidence proved the downloads page was open; the value came from a pre-release row | Values can declare a `pattern` or `min` and `max`, enforced in code, and over MCP `verified` also requires every requested value (`f3c959d`) |
 | Trials | With the shape check, two python.org runs under the 14B-planner config returned no version rather than a wrong one. The runs weren't verified, and `missing_values` named the gap | — |
+| 28 | A url check proved a **blank page**. The planner guessed `saucedemo.com/login.html`; the server 404s, its single-page-app fallback redirects to a 200 and rewrites the address back, so the check saw the URL it asked for and no error. The executor then chose elements that weren't there for 35 steps | Two fixes: a url check fails on an error status, and an observation with no elements and no text ends the attempt after one step back |
+| 29 | Verified, with the wrong commit: asked for the newest commit on a GitHub commits page, both runs returned a real one from the middle of the list | Not fixed. A shape check can't catch a value that's well formed, on the right page, and wrong only in its position ([roadmap](roadmap.md) phase 1, item 7) |
 
 **Free-text answers are the least trustworthy output.** In the trials, the 7B baseline's free-text answer said "3.15" in all three python.org runs, while its typed value said 3.14.7 every time. That's why page-derived text is withheld from calling agents unless they ask for it.
 
@@ -133,6 +135,7 @@ Two more surfaced in the trials comparison (sections 4 and 5).
 - A `text` check proves only what the page displays, and a page can display anything (the `fake-success` trap).
 - A `request` check proves the site accepted a request, not what was in it (section 2).
 - A search step gets a text check for its search term. That proves the page shows the term, and nothing more.
+- A `url` check proves an address, not a page. Since run 28 an error status fails it — but a guessed URL that redirects into a blank 200 still matches, which is why an empty observation now ends the attempt instead.
 
 **A bug the trials exposed:** when the planner declares a value with the same name as one the caller requested, the caller's pattern and bounds are dropped, and the planner's unshaped version is read instead. It happened in two of the three 7B python.org runs. Fixing it is on the roadmap.
 

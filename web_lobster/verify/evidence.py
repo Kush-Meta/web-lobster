@@ -16,7 +16,7 @@ import json
 import operator
 import re
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -128,6 +128,7 @@ class EvidenceContext:
     page_text: str
     events: list[NetworkEvent] = field(default_factory=list)  # since the sub-goal started
     values: dict[str, ExtractedValue] = field(default_factory=dict)
+    page_status: Optional[int] = None  # what the page itself answered, when known
 
 
 def evaluate(check: EvidenceCheck, context: EvidenceContext) -> CheckResult:
@@ -136,7 +137,17 @@ def evaluate(check: EvidenceCheck, context: EvidenceContext) -> CheckResult:
 
 
 def _check_url(check: UrlCheck, context: EvidenceContext) -> tuple[bool, str]:
-    return url_matches(context.page_url, check.pattern), f"page is at {context.page_url}"
+    """The address alone isn't proof: a 404 has a URL too.
+
+    A planner that guesses a URL — saucedemo.com/login.html, which doesn't
+    exist — sends the browser to an error page that matches the pattern it
+    guessed. So an error status fails the check, and an unknown one doesn't.
+    """
+    if not url_matches(context.page_url, check.pattern):
+        return False, f"page is at {context.page_url}"
+    if context.page_status is not None and context.page_status >= 400:
+        return False, f"page is at {context.page_url}, which answered {context.page_status}"
+    return True, f"page is at {context.page_url}"
 
 
 def _check_request(check: RequestCheck, context: EvidenceContext) -> tuple[bool, str]:

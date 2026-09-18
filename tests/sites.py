@@ -47,6 +47,11 @@ def build_sites() -> tuple[Site, Site]:
         "/api/book": (303, {"Location": "/confirmation/ABC123"}, ""),
         "/confirmation/ABC123": html("<h1>Booking confirmed</h1><p>Reference ABC123</p>"),
         "/links": html('<a href="/checkout">Go to checkout</a>'),
+        # What a guessed URL actually gets: an address that matches, a page that
+        # isn't there. saucedemo.com/login.html answers this way live.
+        "/login.html": (404, {"Content-Type": "text/html"}, "<html><body><h1>Not found</h1></body></html>"),
+        # And what it gets on a single-page app: a 200 with nothing rendered.
+        "/nothing": html(""),
         "/dropdown": html(
             '<select aria-label="City"><option>Pick one</option><option>New York</option>'
             '<option>Tokyo</option></select><p id="chosen"></p>'

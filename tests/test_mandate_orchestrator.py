@@ -99,3 +99,10 @@ async def test_injected_executor_is_contained_and_task_still_completes(sites, tm
         name == "on_safety_flag" and args[1].startswith("Mandate:") for name, args in ui.events
     )
     assert "Mandate blocked 2 action(s)" in result.summary()
+
+    # The run record says what the executor did, blocked attempts included, so a
+    # stuck run can be read afterwards — and the granted value isn't in it.
+    trail = "\n".join(result.actions)
+    assert EMAIL not in trail
+    assert '"{{email}}"' in trail
+    assert trail.count("Blocked by mandate") == 2
