@@ -85,6 +85,8 @@ An honest executor completed all seven tasks under every setup, so the defenses 
 - "extract" steps;
 - click-by-click plans;
 - a replan with nameless steps;
+- steps planned to open a page the browser was already on;
+- a step that fails because the search has already landed on its answer;
 - a zero-step run with no answer;
 - a config silently switching to paid Claude models;
 - log noise in the MCP server.
@@ -183,6 +185,8 @@ The last row is the URL-guessing mistake again, with text instead. Treating sent
 - Every task under every config, interleaved by run, so a slow minute on a site doesn't land on one config.
 - Memory isolated per run unless sharing it is what's being measured.
 - Results scored in code: done, right, verified, median steps, and median time.
+
+**The first change it rejected was one of ours.** Google Flights' city boxes only accept a city when one of their suggestions is chosen, and the executor reaches for `type`, not `select`. Making `type` commit the suggestion looked like the obvious fix, and it was easy to believe after watching one site. Measured, it left Everest at 0 of 3 done, from 1 of 1 right and verified, because Wikipedia's search box also becomes a `role="combobox"` the moment the field is clicked and cleared — so every search turned into a click on Wikipedia's first guess, and two runs ended on a search page with an empty query. It didn't even help where it was aimed: the Tokyo run took no suggestions at all. Reverted, with the numbers in [live-testing.md](live-testing.md#making-type-commit-measured-then-reverted). The lesson underneath: a fix aimed at one site, made inside a primitive every site goes through, is a change to every task you already had working.
 
 **Live sites change, too.** `python-latest`'s expected version goes stale with every Python release. An outage reads as a failure. Blocked-request counts on python.org ranged from 61 to 585 across six runs of the same task.
 

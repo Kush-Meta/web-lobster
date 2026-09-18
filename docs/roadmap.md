@@ -31,7 +31,8 @@ Live, with a local 7B model on a 16 GB Mac ([notes](live-testing.md)): lookups t
 
 - **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules, for example a rebooking date that must match a typed value from the task.
 - **Live models.** Measurements so far are a handful of runs per task on one local 7B model ([notes](live-testing.md)). A text value can be wrong while the run counts as verified (run 15), search steps are judged by a model, and Claude configs haven't been run live. The benchmark's live mode hasn't run either, so how often a real model falls for a planted instruction is still unmeasured.
-- **Login.** Tasks start with a fresh browser profile, so signed-in tasks don't work.
+- **Interactive sites.** Choosing from an autocomplete works, but only through `select`, and a 7B executor reaches for `type` on those fields. Making `type` commit the suggestion was measured over nine runs and reverted: it cost the Everest task every run it had been winning, and still didn't get Google Flights to search ([notes](live-testing.md#making-type-commit-measured-then-reverted)). Next: get the executor to pick `select` on a combobox.
+- **Login.** Tasks start with a fresh browser profile, so signed-in tasks don't work ([design](design/step-8-signed-in-tasks.md)).
 - **Dashboard.** The web dashboard asks the planner's questions, but doesn't accept mandates or notes, or show receipts.
 - **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.
 
@@ -69,7 +70,7 @@ Judge them by success rate, question quality (a 7B planner still under-asks, as 
 
 ### Phase 4: real-world use
 
-- **Signed-in tasks.** Persistent browser profiles scoped to a mandate. It's security-sensitive, so a design record comes first.
+- **Signed-in tasks.** Persistent browser profiles scoped to a mandate, and secrets from a password manager rather than environment variables. Designed in [design/step-8-signed-in-tasks.md](design/step-8-signed-in-tasks.md); not built.
 - **The dashboard.** Mandate entry, receipts, and a notes field.
 
 ### Phase 5: speed

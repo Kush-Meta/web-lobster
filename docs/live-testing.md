@@ -114,6 +114,26 @@ Typing into a field that completes inline now goes in as one insertion rather th
 
 **What's still in the way:** the gesture that commits an autocomplete lives only on `select`, and a 7B executor reaches for `type`. Making `type` commit whenever a combobox is showing suggestions would likely fix Google Flights, but it changes what typing means everywhere, including the Wikipedia search step in the measured Everest task. That's a change to make with the trials tool, not by assumption.
 
+### Making `type` commit: measured, then reverted
+
+Nine trial runs of the three known tasks on a build where `type` took the suggestion whenever the focused field looked like a combobox, plus one more Tokyo attempt.
+
+| Task | Config | Done | Right | Verified | Median steps | Median time |
+|---|---|---|---|---|---|---|
+| eiffel | `local-16gb` | 3/3 | 3/3 | 3/3 | 0 | 36 s |
+| python-latest | `local-16gb` | 3/3 | 3/3 | 1/3 | 3 | 85 s |
+| everest | `local-16gb` | **0/3** | 1/3 | **0/3** | 25 | 440 s |
+
+| # | Task | Path | Outcome | Steps | Time | What it showed |
+|---|---|---|---|---|---|---|
+| 26 | Tokyo again, with typing that commits | CLI, no mandate | Failed | 19 | 284 s | Suggestions taken: **0**. Google Flights' city fields never offered a `role="option"` list to take in that run, so the change bought nothing where it was aimed |
+
+**Everest is the cost.** It had been 1 of 1 right and verified in run 24, in 5 steps. Under this change no run finished, two returned no elevation at all, and the median run took 25 steps and over 7 minutes. The receipts show two of the three runs left on `en.wikipedia.org/w/index.php`, once with the URL reading `?search=&title=Special%3ASearch` — the search page with **nothing in the query**. One of those failed its search step on a text check for "Mount Everest" that wasn't on the page, because nothing had been searched for. The third run did reach the article, and then spent its steps on a model-judged "find the elevation" sub-goal that returned not achieved with confidence 0 every time.
+
+Driving Wikipedia by hand afterwards showed why it engaged there at all. The search box is a plain `<input name="search">` on a freshly loaded page, but once the controller has clicked it and cleared it through React's setter, the widget hydrates into `role="combobox"` with `aria-autocomplete="list"` — indistinguishable, to the check, from a Google Flights city box. So every Wikipedia search became a click on whatever Wikipedia suggested first, and the step that was supposed to run a search stopped running one.
+
+**Reverted.** Committing a suggestion stays on `select`, where every known task came back right and verified. `tests/test_select_action.py` now pins the decision from both sides: `select` takes the suggestion, `type` deliberately leaves the field uncommitted. Google Flights stays unsolved by design — the executor prefers `type` for these fields, and making `type` commit costs three known tasks to fix one unknown. The next thing to try is the other end: teaching the executor to reach for `select` on a combobox, which changes one model's choice rather than what typing means everywhere.
+
 ## Measured with `web-lobster trials` (step 7)
 
 The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.

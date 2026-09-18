@@ -1,0 +1,28 @@
+# Live tasks that need a sign-in, for `web-lobster trials`.
+#
+# Kept apart from web.yaml because these need credentials in the environment,
+# and the values must be set before the run:
+#
+#   export WEB_LOBSTER_DATA_DEMO_USER=standard_user
+#   export WEB_LOBSTER_DATA_DEMO_PASSWORD=secret_sauce
+#   web-lobster trials trials/signed-in.yaml -c configs/local-16gb.yaml
+#
+# The model only ever sees {{username}} and {{password}}; the browser puts the
+# real values in, and the mandate lets them reach that one origin and nowhere
+# else. saucedemo.com is a practice site whose credentials are published on its
+# own front page, so nothing secret is involved.
+
+tasks:
+  - id: demo-login
+    task: Sign in with the username and password provided, then find the price of the Sauce Labs Backpack.
+    mandate:
+      origins: ["https://www.saucedemo.com"]
+      data:
+        - {name: username, value_env: WEB_LOBSTER_DATA_DEMO_USER, origins: ["https://www.saucedemo.com"]}
+        - {name: password, value_env: WEB_LOBSTER_DATA_DEMO_PASSWORD, origins: ["https://www.saucedemo.com"]}
+      expires_in_minutes: 20
+    start_url: https://www.saucedemo.com/
+    values:
+      - {name: backpack_price, type: number, description: "price of the Sauce Labs Backpack in US dollars", min: 1, max: 100}
+    expect:
+      backpack_price: {equals: 29.99, tolerance: 0.001}

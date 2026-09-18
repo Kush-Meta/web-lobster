@@ -125,3 +125,19 @@ async def test_elements_under_an_overlay_are_not_offered(sites):
     finally:
         await controller.close()
     assert [el.label for el in observation.elements] == ["City"]  # only the one on top
+
+
+async def test_typing_into_an_autocomplete_leaves_it_uncommitted(sites):
+    a, _ = sites
+    # Only select takes the suggestion. Making type take it too was measured over
+    # nine live runs: it cost Wikipedia searches every run they had been winning
+    # (0 of 3 Everest runs done, against 1 of 1 without it) and still didn't get
+    # Google Flights to search, because a wrong suggestion is worse than none.
+    controller = await _open(a, "/combobox")
+    try:
+        await controller.execute(Action(
+            action=ActionType.TYPE, element_id=await _element_id(controller, "City"), text="Tokyo",
+        ))
+        assert "Chosen" not in await controller.page_text()
+    finally:
+        await controller.close()

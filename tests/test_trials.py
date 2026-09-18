@@ -42,12 +42,23 @@ class TestExpectations:
 
 
 class TestTrialFiles:
-    def test_the_shipped_trial_file_loads_and_is_read_only(self):
+    def test_the_shipped_trial_files_load_and_are_read_only(self):
+        files = sorted(path.name for path in (REPO / "trials").glob("*.yaml"))
+        assert files == ["signed-in.yaml", "web.yaml"]
+        for name in files:
+            trial_file = TrialFile.from_yaml(REPO / "trials" / name)
+            assert trial_file.tasks, name
+            for task in trial_file.tasks:
+                # Read-only: a trial may sign in, but never submits, buys, or sends.
+                assert task.mandate.writes == [] and not task.mandate.allow_any_write
+                assert task.expect and set(task.expect) <= {spec.name for spec in task.values}
+
+    def test_the_default_trial_file_needs_nothing_from_the_environment(self):
         trial_file = TrialFile.from_yaml(REPO / "trials" / "web.yaml")
         assert [task.id for task in trial_file.tasks] == ["eiffel", "python-latest", "everest"]
-        for task in trial_file.tasks:
-            assert task.mandate.writes == [] and not task.mandate.allow_any_write
-            assert task.expect and set(task.expect) <= {spec.name for spec in task.values}
+        # Tasks that need credentials live in signed-in.yaml, so the default
+        # suite runs for anyone with Ollama and nothing else set up.
+        assert not any(task.mandate.data for task in trial_file.tasks)
 
     def test_expectations_must_name_requested_values(self, tmp_path):
         path = tmp_path / "bad.yaml"
