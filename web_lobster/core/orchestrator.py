@@ -855,8 +855,9 @@ class Orchestrator:
         return all(evaluate(check, context).passed for check in url_checks)
 
     def _mandate_approves(self, action: Action, page_url: str) -> bool:
-        """Whether the mandate already approved this action: typing only granted data where allowed."""
-        if not self.enforcer or action.action != ActionType.TYPE or not action.text:
+        """Whether the mandate already approved this action: entering only granted
+        data where allowed. select counts too, since it types into comboboxes."""
+        if not self.enforcer or action.action not in (ActionType.TYPE, ActionType.SELECT) or not action.text:
             return False
         return self.enforcer.approves_entry(action.text, page_url)
 

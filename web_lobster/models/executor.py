@@ -47,7 +47,7 @@ Available actions:
   {"action": "scroll", "direction": "down"|"up"}
   {"action": "navigate", "url": "https://..."}
   {"action": "wait", "seconds": N}
-  {"action": "select", "element_id": N, "text": "option text"}
+  {"action": "select", "element_id": N, "text": "option text"}   -- dropdowns, and autocomplete boxes (types the text, then takes the suggestion)
   {"action": "hover", "element_id": N}
   {"action": "go_back"}
   {"action": "done", "reason": "brief description of what was accomplished"}

@@ -77,7 +77,8 @@ class SafetyGate:
                 )
 
         # Form submission detection
-        if action.action == ActionType.TYPE and action.element_id:
+        # select types into custom comboboxes, so it reaches sensitive fields too.
+        if action.action in (ActionType.TYPE, ActionType.SELECT) and action.element_id:
             element = self._find_element(action.element_id, observation)
             if element and element.input_type in ("password", "email"):
                 return SafetyVerdict(

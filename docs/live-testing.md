@@ -83,6 +83,22 @@ The same machine and model, after [step 6](design/step-6-planner-briefing.md) ad
 
 Runs 19 to 21 measure the folding code: 3 of 3 found the right answer, with a median of 9 steps and 171 s. Runs 11 and 18 took 35 and 27 steps, and run 16 failed. None of the three was fully verified, because the search step has no evidence and a model judged it. Three runs is still a small sample.
 
+## Trying it out (2026-09-18)
+
+Two runs from the command line on the same machine, after step 7.
+
+| # | Task | Path | Outcome | Steps | Time | What it showed |
+|---|---|---|---|---|---|---|
+| 22 | Eiffel Tower height, starting on the article | CLI, no mandate | Done and verified; "330 meters (1,083 feet)" | 0 | 47 s | 16 s of it was the brief, which had nothing to ask. The sub-goal's url check already passed, so nothing was clicked, and the answer came from the article's main content |
+| 23 | "Find me a cheap round-trip flight to Tokyo" on Google Flights | CLI, no mandate | Failed | 40 | 542 s | Two findings, below |
+
+Run 23 is the first live test of a site that isn't a document, and it found both a good surprise and a bug:
+
+- **The brief asked what runs 14 and 17 never did:** "What city are you departing from?", with New York as the default. The planner's question set varies between runs, so under-asking isn't constant.
+- **`select` couldn't drive an autocomplete.** Google Flights' city fields are `role="combobox"` widgets, not `<select>` elements. The executor reasonably chose `select` for them, and `select` called Playwright's `select_option`, which only works on a real `<select>`. Every attempt raised an error and cost a step, so the search was never run and the task burned all 40 steps. The typing path already knew how to drive these widgets: it clicks, waits for the inner input to mount, clears it through React's setter, and types character by character so the autocomplete fires.
+
+**Fixed:** `select` uses the browser's picker on a real `<select>`, and otherwise types the text and takes the suggestion with Enter. The guards that cover typing now cover `select` too: the mandate's data-entry check already did, and the safety gate's sensitive-field check and the mandate-approves path were extended to match. `tests/sites.py` gained a real dropdown and a Google-Flights-style autocomplete to test both paths.
+
 ## Measured with `web-lobster trials` (step 7)
 
 The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.

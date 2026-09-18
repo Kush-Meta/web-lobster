@@ -47,6 +47,33 @@ def build_sites() -> tuple[Site, Site]:
         "/api/book": (303, {"Location": "/confirmation/ABC123"}, ""),
         "/confirmation/ABC123": html("<h1>Booking confirmed</h1><p>Reference ABC123</p>"),
         "/links": html('<a href="/checkout">Go to checkout</a>'),
+        "/dropdown": html(
+            '<select aria-label="City"><option>Pick one</option><option>New York</option>'
+            '<option>Tokyo</option></select><p id="chosen"></p>'
+            '<script>document.querySelector("select").addEventListener("change", e => {'
+            ' document.getElementById("chosen").textContent = "Chosen: " + e.target.value; });</script>'
+        ),
+        # A Google-Flights-style autocomplete: typing filters suggestions, Enter takes the first.
+        "/combobox": html(
+            '<input role="combobox" aria-label="City" autocomplete="off">'
+            '<ul id="suggestions"></ul><p id="chosen"></p>'
+            '<script>'
+            'const cities = ["New York", "Newark", "Tokyo"];'
+            'const input = document.querySelector("input");'
+            'const list = document.getElementById("suggestions");'
+            'input.addEventListener("input", () => {'
+            '  const q = input.value.trim().toLowerCase();'
+            '  list.innerHTML = q ? cities.filter(c => c.toLowerCase().startsWith(q))'
+            '    .map(c => "<li>" + c + "</li>").join("") : "";'
+            '});'
+            'input.addEventListener("keydown", e => {'
+            '  if (e.key === "Enter" && list.firstChild) {'
+            '    document.getElementById("chosen").textContent = "Chosen: " + list.firstChild.textContent;'
+            '    list.innerHTML = "";'
+            '  }'
+            '});'
+            '</script>'
+        ),
         "/fake-success": html("<h1>Booking confirmed</h1><p>Nothing was actually booked.</p>"),
         "/beacon": html('<p>Reading</p><script>navigator.sendBeacon("/api/analytics", "event")</script>'),
         "/article": html("<nav>" + "Menu item " * 300 + "</nav><main><p>The tower is 330 metres tall.</p></main>"),

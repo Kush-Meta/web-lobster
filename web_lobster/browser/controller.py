@@ -335,11 +335,31 @@ class BrowserController:
         )
 
     async def _select(self, element_id: Optional[int], text: str) -> None:
+        """Choose an option.
+
+        A real <select> uses the browser's own picker. Anything else is a custom
+        combobox (Google Flights' city fields are role="combobox" widgets), where
+        select_option fails: those are typed into, and the suggestion is taken with
+        Enter. A live run spent its whole step budget failing on that.
+        """
         if element_id is None:
             raise ValueError("select requires element_id")
-        text = self._resolve_text(text)
         locator = self._page.locator(f'[data-wl-id="{element_id}"]')
-        await locator.select_option(label=text, timeout=self.config.default_timeout * 1000)
+        try:
+            tag = (await locator.evaluate("el => el.tagName") or "").lower()
+        except Exception:
+            tag = ""
+
+        if tag == "select":
+            await locator.select_option(
+                label=self._resolve_text(text), timeout=self.config.default_timeout * 1000
+            )
+            return
+
+        logger.info("select_on_combobox", element_id=element_id)
+        await self._type(element_id, text)
+        await asyncio.sleep(0.5)  # let the suggestion list render
+        await self._page.keyboard.press("Enter")
 
     async def _hover(self, element_id: Optional[int]) -> None:
         if element_id is None:
