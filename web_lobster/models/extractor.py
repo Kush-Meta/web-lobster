@@ -88,7 +88,7 @@ class Extractor:
         origin = origin_of(observation.url)
         values: dict[str, ExtractedValue] = {}
         for spec in specs:
-            value = coerce_value(spec, raw.get(spec.name))
+            value = coerce_value(spec, _picked(spec, raw.get(spec.name)))
             if value is None:
                 # Log the name only: the rejected content came from the page.
                 logger.info("value_not_extracted", name=spec.name, type=spec.type.value)
@@ -113,6 +113,13 @@ class Extractor:
                 else _HINTS[spec.type]
             )
             description = f" — {spec.description}" if spec.description else ""
+            if spec.pick:
+                # Picking one of many is what a small model gets wrong; ordering
+                # them is what it gets right. It lists, and code takes an end.
+                hint = (
+                    "a JSON array of every match on the page, in the order they appear, "
+                    "top of the page first"
+                )
             lines.append(f'- "{spec.name}": {hint}{_shape_hint(spec)}{description}')
 
         return f"""VALUES TO READ:
@@ -125,6 +132,15 @@ PAGE TEXT:
 {page[:PAGE_TEXT_LIMIT]}
 
 Respond with ONLY a JSON object mapping each value name to its value, or null."""
+
+
+def _picked(spec: ValueSpec, raw: object) -> object:
+    """Take the end of a listed value that the spec asked for, in code."""
+    if not spec.pick or not isinstance(raw, list):
+        return raw
+    if not raw:
+        return None
+    return raw[0] if spec.pick == "first" else raw[-1]
 
 
 def _shape_hint(spec: ValueSpec) -> str:
@@ -147,10 +163,21 @@ def _report_tool(specs: list[ValueSpec]) -> dict:
         "input_schema": {
             "type": "object",
             "properties": {
-                spec.name: {
-                    "type": [_JSON_TYPES[spec.type], "null"],
-                    "description": spec.description or spec.type.value,
-                }
+                spec.name: (
+                    {
+                        "type": ["array", "null"],
+                        "items": {"type": _JSON_TYPES[spec.type]},
+                        "description": (
+                            f"every match on the page, in the order they appear: "
+                            f"{spec.description or spec.type.value}"
+                        ),
+                    }
+                    if spec.pick
+                    else {
+                        "type": [_JSON_TYPES[spec.type], "null"],
+                        "description": spec.description or spec.type.value,
+                    }
+                )
                 for spec in specs
             },
             "additionalProperties": False,

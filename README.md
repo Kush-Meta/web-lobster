@@ -123,7 +123,7 @@ What doesn't work yet:
 - **Staying signed in.** Every task starts with a fresh browser profile, so a session never carries over. Signing in during a task does work — a mandate grants a username and password as `{{placeholders}}` the model never sees, and neither ever appears in a run record — and after the run-28 fixes it went 3 of 3 on a practice site. Persistent profiles are designed ([docs/design/step-8-signed-in-tasks.md](docs/design/step-8-signed-in-tasks.md)) but not built.
 - **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops URL checks that spell out query strings and separate "extract" steps. It counts an "open the page" step as done when the browser is already provably there, and when a step fails after carrying the browser to a later step's page, it skips ahead instead of replanning. In three repeated Everest runs after that, all three found the right answer, two of them in under three minutes. Other multi-page flows and forms have only been tried once each on local models, so treat them as hit or miss. `configs/claude.yaml` gives the planner far more to work with, but it hasn't been run against live sites yet.
 - **Pages you have to drive**, like a flight search. Choosing from an autocomplete works, but only through `select`, and a 7B executor reaches for `type` on those fields. Making `type` commit the suggestion was measured over nine runs and reverted: it broke the searches that were working and fixed nothing ([notes](docs/live-testing.md#making-type-commit-measured-then-reverted)).
-- **Values that mean "the first one" in a list.** Asked for the newest commit on a GitHub commits page, two runs returned a real commit from the middle of it, and both came back verified. A shape check can't catch a value that's well formed, on the right page, and wrong only in its position.
+- **Pages that need a value written the way the site writes it.** A date typed as `2026-10-15` into a booking site's date box is redisplayed the site's own way, so a check for what was entered can't match it.
 - **Pages that only make sense as images** (charts, canvas apps) on the text-only local config. Use a vision model for the executor and validator there.
 
 Mandate block counts include each page's own analytics and error reporting. MCP results flag those as `background`, and the agent is only told about blocks its own actions could have caused.
@@ -224,6 +224,8 @@ A replan sees only the planner's own sub-goals, attempt counts, mandate block co
 Values come back on the result and in the run summary. Numbers use US separators (`1,209.50`); `1.209,50` is rejected rather than guessed.
 
 A value can also carry a shape that code enforces: `pattern` for text, which the whole text must match, and `min` and `max` for numbers. A value that fails its shape counts as not read, and over MCP a run with a missing value isn't verified.
+
+A value can say **which one** it means, too. `"pick": "first"` (or `"last"`) asks the reader to list every match in the order they appear on the page, and code takes the end you asked for. That exists because a 7B reader asked for the newest commit on a page of commits returned the last one in the text every time — at every window size — while the same model listed them in the right order without trouble. The caller's spec always wins over the planner's own wording of it.
 
 ## Thinking before acting
 

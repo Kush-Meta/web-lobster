@@ -18,7 +18,7 @@ import math
 import re
 from datetime import date
 from enum import Enum
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -62,6 +62,11 @@ class ValueSpec(BaseModel):
     pattern: Optional[str] = Field(default=None, max_length=MAX_PATTERN_LENGTH)
     min: Optional[float] = None
     max: Optional[float] = None
+    # Which one, when a page shows a list of them. A 7B model asked for the
+    # newest commit on a page of commits returned the last one in the text every
+    # time, at any window size (live run 29). Asked instead to list them in the
+    # order they appear, it gets the order right, so code takes the end it wants.
+    pick: Optional[Literal["first", "last"]] = None
 
     @field_validator("name")
     @classmethod

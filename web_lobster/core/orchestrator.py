@@ -75,7 +75,7 @@ from web_lobster.tools.mcp_manager import MCPManager
 from web_lobster.memory.task_memory import TaskMemory, TaskRecord
 from web_lobster.mandate.enforcer import MandateEnforcer, MandateExpiredError, Violation
 from web_lobster.mandate.schema import Mandate
-from web_lobster.verify.evidence import EvidenceContext, evaluate
+from web_lobster.verify.evidence import EvidenceContext, ValueCheck, evaluate
 from web_lobster.verify.receipts import (
     MAX_RECEIPT_WRITES,
     ModelVerdict,
@@ -154,6 +154,8 @@ class Orchestrator:
         # it runs on the executor's quarantined side; see core/values.py.
         self.extractor = Extractor(self.executor_backend, config.executor.temperature)
         self._goal_violations_start = 0
+        # Block signatures the executor has already been told about, once per run.
+        self._reported_blocks: set[str] = set()
 
         # One receipt per finished sub-goal, chained so later edits are detectable
         self.receipts = ReceiptLog()
@@ -442,6 +444,35 @@ class Orchestrator:
                 if len(remaining) <= len(issues):
                     plan, issues = candidate, remaining
         self._plan_issues = issues
+        return self._apply_requested_values(plan, context)
+
+    def _apply_requested_values(self, plan: TaskPlan, context: PlanningContext) -> TaskPlan:
+        """The caller's value specs win over the planner's, by name.
+
+        The planner is told which values the caller wants and writes its own
+        specs for them, which dropped the caller's pattern, bounds, and pick:
+        two of three python.org trials read an unshaped version, and a GitHub
+        lookup ignored "the first one on the page". A value the plan never
+        declares is read on the last step, so asking for it is enough.
+        """
+        wanted = {spec.name: spec for spec in context.requested_values}
+        if not wanted:
+            return plan
+        declared = set()
+        for goal in plan.sub_goals:
+            goal.extract = [wanted.get(spec.name, spec) for spec in goal.extract]
+            declared.update(spec.name for spec in goal.extract)
+        missing = [spec for name, spec in wanted.items() if name not in declared]
+        if missing and plan.sub_goals:
+            plan.sub_goals[-1].extract.extend(missing)
+            logger.info("requested_values_added", names=[spec.name for spec in missing])
+        for goal in plan.sub_goals:
+            # Same rule the parser applies, for values added after it ran: a step
+            # that reads proves it read, instead of falling to a model verdict.
+            if goal.extract and not goal.evidence:
+                goal.evidence = [
+                    ValueCheck(name=spec.name, op="!=", value=None) for spec in goal.extract
+                ]
         return plan
 
     async def _run_inner(
@@ -453,6 +484,8 @@ class Orchestrator:
         memory_hits: int,
     ) -> AgentResult:
         try:
+            self._reported_blocks.clear()
+
             # 1. Launch browser
             await self.browser.start(start_url)
 
@@ -730,6 +763,17 @@ class Orchestrator:
                         )
                         continue
 
+                # --- NOTHING TO ENTER ---
+                # Typing with no text clears the field and costs a step. Five of
+                # Google Flights' forty steps went that way in live run 27.
+                if action.action in (ActionType.TYPE, ActionType.SELECT) and not (action.text or "").strip():
+                    logger.warning("type_without_text", element_id=action.element_id)
+                    self.state.action_history.append(Action(
+                        action=ActionType.WAIT,
+                        reason=f"{action.action.value} needs text to enter; nothing was given",
+                    ))
+                    continue
+
                 # --- MANDATE CHECK (deterministic; the model can't argue past it) ---
                 if self.enforcer:
                     violation = self.enforcer.check_action(action, observation.url)
@@ -846,6 +890,7 @@ class Orchestrator:
             events=[],
             values=dict(self.state.values),
             page_status=self.browser.page_status,
+            page_fields=await self._page_fields(),
         )
         return all(evaluate(check, context).passed for check in checks)
 
@@ -908,6 +953,13 @@ class Orchestrator:
         blocked = self.enforcer.drain()
         # A page can repeat the same blocked request many times; tell the executor once.
         for violation, count in collapse_violations(blocked):
+            # And a single-page app repeats it on every step: Google Flights' own
+            # telemetry filled half the executor's history in live run 27. Every
+            # block is still recorded and counted; the executor hears each one once.
+            signature = f"{violation.kind.value} {violation.method or ''} {violation.url.split('?')[0]}"
+            if signature in self._reported_blocks:
+                continue
+            self._reported_blocks.add(signature)
             await self._report_violation(action, violation, count)
         if any(v.main_frame for v in blocked):
             # A blocked navigation leaves Chromium's error page behind; put the
@@ -969,6 +1021,7 @@ class Orchestrator:
                     events=self.browser.network.since(self._goal_network_start),
                     values={**self.state.values, **read},
                     page_status=self.browser.page_status,
+                    page_fields=await self._page_fields(),
                 )
                 checks = [evaluate(check, context) for check in sub_goal.evidence]
                 achieved = all(check.passed for check in checks)
@@ -1200,6 +1253,10 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "gaps": context.gaps if context else [],
             "plan_issues": list(self._plan_issues),
         }
+
+    async def _page_fields(self) -> list[str]:
+        """What the page's fields hold now, for checks about what was entered."""
+        return await self.browser.field_values()
 
     def _action_trail(self) -> list[str]:
         """One line per action taken, for reading a failed run afterwards.

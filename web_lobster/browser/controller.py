@@ -108,6 +108,9 @@ _CLEAR_FOCUSED_INPUT_JS = """
 
 # True when the focused field completes text as you type (aria-autocomplete), where
 # key-by-key typing races the browser's own completions.
+_FIELD_VALUES_JS = """() => [...document.querySelectorAll('input, textarea, select')]
+  .map(el => (el.value || '').trim()).filter(value => value)"""
+
 _INLINE_AUTOCOMPLETE_JS = """() => {
   const el = document.activeElement;
   if (!el) return false;
@@ -490,6 +493,22 @@ class BrowserController:
         request = response.request
         if request.resource_type == "document" and request.frame == self._page.main_frame:
             self._page_status = response.status
+
+    async def field_values(self, limit: int = 40) -> list[str]:
+        """What the page's own fields hold, read live, for evidence checks.
+
+        A value typed into a field never appears in the page's text, so a check
+        about what was entered has to look here. Redacted under a mandate: a
+        granted value reaches the page, never a check or a receipt.
+        """
+        if not self._page:
+            return []
+        try:
+            values = await self._page.evaluate(_FIELD_VALUES_JS)
+        except Exception:
+            return []
+        redact = self.enforcer.redact if self.enforcer else (lambda text: text)
+        return [redact(value)[:200] for value in values[:limit]]
 
     @property
     def current_url(self) -> str:

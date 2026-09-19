@@ -88,6 +88,18 @@ class TestUrlCheck:
         assert evaluate(UrlCheck(pattern=f"{SHOP}/confirmation/*"), _context(page_status=200)).passed
 
 
+class TestTextCheckSeesFields:
+    def test_text_typed_into_a_field_counts(self):
+        # inner_text skips input values, so "I entered New York" could never be
+        # proven by page text. Live run 27 spent a step budget on that check.
+        result = evaluate(TextCheck(contains="New York"), _context(page_fields=["New York"]))
+        assert result.passed
+        assert result.detail == "found in a field on the page"
+
+    def test_still_fails_when_nothing_holds_it(self):
+        assert not evaluate(TextCheck(contains="New York"), _context(page_fields=["Tokyo"])).passed
+
+
 class TestRequestCheck:
     def test_needs_method_url_and_success_status(self):
         check = RequestCheck(method="POST", url=f"{SHOP}/api/*")
@@ -146,6 +158,19 @@ class TestValueCheck:
         context = _context(values={"nonstop": _value("nonstop", ValueType.BOOLEAN, True)})
         assert evaluate(ValueCheck(name="nonstop", op="==", value=True), context).passed
         assert not evaluate(ValueCheck(name="nonstop", op=">", value=False), context).passed
+
+    def test_a_null_check_asks_only_whether_the_value_was_read(self):
+        # What a step whose whole job is reading can prove, instead of falling
+        # back to a model's opinion (live run 28 came back right but unverified).
+        context = _context(values={"price": _value("price", ValueType.NUMBER, 29.99)})
+        read = evaluate(ValueCheck(name="price", op="!=", value=None), context)
+        assert read.passed and read.detail == "{{$price}} was read"
+        assert read.description == "{{$price}} was read"
+        assert not evaluate(ValueCheck(name="gone", op="!=", value=None), context).passed
+
+    def test_a_null_check_needs_an_equality_operator(self):
+        with pytest.raises(ValidationError):
+            ValueCheck(name="price", op="<", value=None)
 
     def test_missing_or_mismatched_values_fail(self):
         context = _context(values={"total": _value("total", ValueType.NUMBER, 412.0)})

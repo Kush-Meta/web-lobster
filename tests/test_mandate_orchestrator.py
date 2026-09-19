@@ -19,7 +19,7 @@ from tests.sites import EMAIL
 from web_lobster.core.config import MCPServerConfig, WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.core.schemas import Action, ActionType, SubGoal, TaskPlan, ValidationResult
-from web_lobster.mandate.enforcer import ViolationKind
+from web_lobster.mandate.enforcer import Violation, ViolationKind
 from web_lobster.mandate.schema import DataGrant, Mandate
 from web_lobster.memory.task_memory import TaskMemory
 
@@ -106,3 +106,37 @@ async def test_injected_executor_is_contained_and_task_still_completes(sites, tm
     assert EMAIL not in trail
     assert '"{{email}}"' in trail
     assert trail.count("Blocked by mandate") == 2
+
+
+async def test_the_executor_hears_about_a_repeated_block_once(sites):
+    a, _ = sites
+    # Google Flights' own telemetry was blocked on every step, and half the
+    # executor's history became the same two lines (live run 27).
+    mandate = Mandate(task="Look", origins=[a.origin])
+    orchestrator = Orchestrator(WebLobsterConfig(), mandate=mandate)
+    noise = Violation(
+        kind=ViolationKind.UNAPPROVED_WRITE, url=f"{a.origin}/_/jserror?id=1",
+        detail="POST /_/jserror isn't one of the writes this mandate allows",
+        method="POST", resource_type="fetch",
+    )
+    later = noise.model_copy(update={"url": f"{a.origin}/_/jserror?id=2"})
+    orchestrator.enforcer = SimpleNamespace(
+        drain=lambda: [noise], check_page=lambda url: None,
+        wait_for_pending=AsyncMock(), violations=[],
+    )
+
+    action = Action(action=ActionType.CLICK, element_id=1)
+    await orchestrator._enforce_after_action(action)
+    orchestrator.enforcer.drain = lambda: [later]  # same endpoint, new query string
+    await orchestrator._enforce_after_action(action)
+
+    blocked = [act for act in orchestrator.state.action_history if "Blocked by mandate" in (act.reason or "")]
+    assert len(blocked) == 1
+
+    # A different endpoint is news, and is reported.
+    other = noise.model_copy(update={"url": f"{a.origin}/_/batchexecute", "detail": "POST /_/batchexecute"})
+    orchestrator.enforcer.drain = lambda: [other]
+    await orchestrator._enforce_after_action(action)
+    blocked = [act for act in orchestrator.state.action_history if "Blocked by mandate" in (act.reason or "")]
+    assert len(blocked) == 2
+

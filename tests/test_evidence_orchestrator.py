@@ -161,6 +161,35 @@ async def test_a_guessed_url_that_404s_does_not_prove_the_page(sites, tmp_path):
     assert "answered 404" in receipt.checks[0].detail
 
 
+async def test_typing_with_nothing_to_type_is_refused(sites, tmp_path):
+    a, _ = sites
+    # Five of Google Flights' forty steps were type actions with no text, each
+    # one clearing the field it had just filled (live run 27).
+    goal = SubGoal(id=1, goal="Enter the email", success_criteria="Filled",
+                   evidence=[TextCheck(contains="kush.test@example.com")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    texts = ["", "kush.test@example.com"]
+
+    async def decide(**kwargs):
+        if not texts:
+            return Action(action=ActionType.DONE, reason="entered")
+        return Action(
+            action=ActionType.TYPE,
+            element_id=element_id(kwargs["observation"], "Email"),
+            text=texts.pop(0),
+        )
+
+    orchestrator.executor.decide = AsyncMock(side_effect=decide)
+
+    result = await orchestrator.run("Enter the email", start_url=f"{a.origin}/")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    assert any("needs text to enter" in line for line in result.actions)
+    # The field check passed on what the field holds, not on page text.
+    assert result.receipts[0].checks[0].detail == "found in a field on the page"
+
+
 async def test_a_page_with_nothing_on_it_ends_the_attempt(sites, tmp_path):
     a, _ = sites
     # Live run 28 landed on an empty page and spent 35 of its 40 steps choosing

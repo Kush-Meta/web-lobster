@@ -184,6 +184,19 @@ That should work!'''
         ]
 
 
+    def test_a_step_that_only_reads_proves_it_read(self):
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Open the product page", "evidence": [{"type": "url", "pattern": "https://shop.example/p/1"}],
+             "extract": [{"name": "price", "type": "number"}]},
+            {"id": 2, "goal": "Find the price of the backpack",
+             "extract": [{"name": "backpack_price", "type": "number"}]},
+        ]))
+        # The reading step proves itself with a value check instead of falling
+        # back to a model's opinion, whether or not it folds into the step before.
+        checks = [(c.name, c.op, c.value) for g in goals for c in g.evidence if c.type == "value"]
+        assert checks == [("backpack_price", "!=", None)]
+
+
 class TestExecutorParsing:
     """Test the executor's action response parsing."""
 

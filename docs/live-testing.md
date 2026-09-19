@@ -190,6 +190,62 @@ The test site gained both shapes: a `/login.html` that 404s, and a `/nothing` th
 
 **29 — a verified run with the wrong answer, which is the failure that matters most.** Both runs opened the commits page, passed their url check, and returned `latest_commit` as "Fix premature done, broken replan loop, and add answer extraction", a real commit from weeks earlier, sitting in the middle of the same page. The newest one was "Type into autocompletes in one go, and hide covered elements". This is exactly what shape checks can't catch: the value is a well-formed commit subject, from the right page, of the right type. Nothing about it is malformed — it's just not the newest, and "newest" is a property of where it sits in the list, which is what flattening the page to text throws away. A value that means "the first one" needs to be read positionally, not described to a model in prose.
 
+### Reading the three failures, and fixing what they showed (2026-09-19)
+
+Run records now carry the executor's action trail, so each failure could be read rather than guessed at. Each of the three turned out to be a different bug.
+
+**Tokyo: five things, and the browser layer isn't one of them.** Driving Google Flights through the controller by hand entered both cities, took both suggestions, and clicked Search — the widgets work. Two theories died on contact: a read-only mandate blocks neither the autocomplete (5 suggestions appear with it on) nor the search. What's actually wrong:
+
+1. **The task has no answer.** "A cheap round-trip flight to Tokyo" names no dates, and Google Flights won't search without them. With both cities filled and Search clicked, the URL becomes a real `tfs=…` search URL and the page still shows the home page.
+2. **The only prices on that page are adverts** — `$126`, `$170`, `$268` are promo cards for Atlanta departures. A run that reads a price there reads an advert.
+3. **The evidence could never pass.** The check was `page text contains "New York"`, and a value typed into a field is not page text: after typing, `input_value` is "New York" while `inner_text(body)` doesn't contain it. That applies to every form-filling task, not just this one.
+4. **The executor** picks `type` (which never commits a suggestion), clicks blindly, and emitted **5 `type` actions with no text at all**.
+5. **Half its context was noise:** 49 of 95 history entries were repeated mandate blocks — `jserror` 22 times, `batchexecute` 21 — because `worth_reporting` treats any same-origin fetch write as possibly the agent's own doing, and a Google SPA fires telemetry on every step.
+
+**The sign-in: it logs itself back out.** Beyond the guessed URL, the receipts show sub-goal "Sign in" failing with the page back at `/` after the executor clicked around the inventory page, then retyping credentials — including `type (el=2) "{{password}}"` followed by `type (el=2) "{{username}}"`, both into the password field. And the last sub-goal ("Find the price") carried no evidence at all, so it fell to a model verdict: that is why runs that were right came back unverified.
+
+**GitHub: the reader takes the last one, not the first.** The commits arrive in page order with the answer at character 245, so nothing is lost in flattening — the model simply returns the last matching item in whatever window it is given, identically every time at temperature 0:
+
+| Text given to the reader | Answer returned | Its position |
+|---|---|---|
+| All 3,875 characters | "Redesign dashboard UI…" | 3,609 |
+| First 1,200 characters | "Think before acting…" | ~1,150 |
+| First 600 characters | "Make select work on autocomplete fields…" | ~560 |
+
+Trimming the page doesn't help; it only moves the wrong answer. But the same model asked to **list** the commits in page order gets the order right, 2 of 2.
+
+### What changed
+
+| Fix | Why |
+|---|---|
+| A `text` check also passes when a **field on the page holds** the text | A value typed into a field isn't page text, so "prove I entered New York" was unsatisfiable |
+| A value can declare `pick: first` or `last`; the reader is asked to **list** every match in page order and **code takes the end** | Picking one of many is what a small model gets wrong; ordering them is what it gets right |
+| **The caller's value spec wins** over the planner's, by name, and a requested value the plan never declares is read on the last step | The planner rewrites the caller's values in its own words and drops their `pattern`, bounds, and `pick` |
+| A step whose only job is reading gets a **value check** (`{{$x}} was read`) instead of a model verdict | A run that read the right value still came back unverified |
+| The executor hears about each blocked endpoint **once per run** | Every block is still recorded and counted; the 22nd `jserror` taught it nothing |
+| A `type` or `select` with no text is refused before it runs | Typing nothing clears the field the last step filled, and costs a step |
+
+### What it did to the numbers
+
+| Task | Before | After |
+|---|---|---|
+| GitHub newest commit | 0/3 right, **3/3 verified and wrong** | **3/3 right and verified**, 2 steps median |
+| Tokyo, with dates and notes | 1 sub-goal, none completed, 40 steps | **3 of 5 sub-goals proven**, both cities entered |
+| Sign in and read a price | 3/3 right, **1/3 verified** | 2/3 right, **2/3 verified** — every run that finished was proven |
+| Eiffel / python.org / Everest | right, 2 of 3 verified | right, 2 of 3 verified (no regression) |
+
+The Tokyo run is the clearest read on the fixes, because three of them show up in one trail:
+
+```
+2. "Clear the 'Where from?' field and type 'New York'"  ✓ found on the page
+3. "Clear the 'Where to?' field and type 'Tokyo'"       ✓ found in a field on the page
+4. "Set the Departure date to 2026-10-15"               ✗ not found on the page or in its fields
+```
+
+On the sign-in task the change is in what "verified" covers: the step that reads the price now proves itself with `{{$backpack_price}} was read` instead of a model's opinion, so both runs that finished came back fully verified. The one that didn't finish is the wander — it signed in, clicked on, and logged itself back out.
+
+Sub-goal 3 is the check that could never have passed before. Mandate-block noise fell from **49 of 95** history entries to **4 of 50**, and there were no empty `type` actions at all. What stops it now is narrower than anything above: it typed `2026-10-15` into the date box, and Google Flights reformats the date it shows, so a text check for the ISO string can't match. Dates written the way a site writes them are the next thing in the way.
+
 ## Measured with `web-lobster trials` (step 7)
 
 The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.

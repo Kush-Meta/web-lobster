@@ -91,11 +91,21 @@ class TextCheck(BaseModel):
 
 
 class ValueCheck(BaseModel):
-    """A typed value read on this or an earlier sub-goal compares as stated."""
+    """A typed value read on this or an earlier sub-goal compares as stated.
+
+    A null `value` with `!=` asks only whether the value was read and passed its
+    shape checks, which is what a step whose whole job is reading can prove.
+    """
     type: Literal["value"] = "value"
     name: str
     op: Literal["==", "!=", "<", "<=", ">", ">="]
-    value: Scalar
+    value: Optional[Scalar] = None
+
+    @model_validator(mode="after")
+    def _null_only_compares_for_existence(self) -> "ValueCheck":
+        if self.value is None and self.op not in ("==", "!="):
+            raise ValueError(f"value check on {self.name!r}: null only works with == or !=")
+        return self
 
     @field_validator("name")
     @classmethod
@@ -105,7 +115,10 @@ class ValueCheck(BaseModel):
         return v
 
     def describe(self) -> str:
-        return "{{$" + self.name + "}} " + f"{self.op} {json.dumps(self.value)}"
+        ref = "{{$" + self.name + "}}"
+        if self.value is None:
+            return f"{ref} " + ("was read" if self.op == "!=" else "was not read")
+        return f"{ref} {self.op} {json.dumps(self.value)}"
 
 
 EvidenceCheck = Annotated[
@@ -129,6 +142,7 @@ class EvidenceContext:
     events: list[NetworkEvent] = field(default_factory=list)  # since the sub-goal started
     values: dict[str, ExtractedValue] = field(default_factory=dict)
     page_status: Optional[int] = None  # what the page itself answered, when known
+    page_fields: list[str] = field(default_factory=list)  # what the page's inputs hold
 
 
 def evaluate(check: EvidenceCheck, context: EvidenceContext) -> CheckResult:
@@ -170,14 +184,28 @@ def _normalize(text: str) -> str:
 
 
 def _check_text(check: TextCheck, context: EvidenceContext) -> tuple[bool, str]:
-    if _normalize(check.contains) in _normalize(context.page_text):
+    """The page shows this text, or one of its fields holds it.
+
+    A value typed into a field is not page text — inner_text skips it — so a
+    plan that proves "I entered New York" with a text check could never pass.
+    Live run 27 spent a whole step budget on one. A field holding what was
+    typed is proof of the agent's own action, so it counts.
+    """
+    wanted = _normalize(check.contains)
+    if wanted in _normalize(context.page_text):
         return True, "found on the page"
-    return False, "not found on the page"
+    if any(wanted in _normalize(value) for value in context.page_fields):
+        return True, "found in a field on the page"
+    return False, "not found on the page or in its fields"
 
 
 def _check_value(check: ValueCheck, context: EvidenceContext) -> tuple[bool, str]:
     ref = "{{$" + check.name + "}}"
     value = context.values.get(check.name)
+    if check.value is None:
+        read = value is not None
+        passed = read if check.op == "!=" else not read
+        return passed, f"{ref} " + ("was read" if read else "was not read")
     if value is None:
         return False, f"{ref} was not read"
 

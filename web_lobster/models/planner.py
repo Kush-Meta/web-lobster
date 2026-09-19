@@ -21,7 +21,7 @@ from pydantic import TypeAdapter, ValidationError
 from web_lobster.core.schemas import SubGoal, TaskPlan
 from web_lobster.core.briefing import TaskBrief, is_click_level, mentions_a_change, parse_brief
 from web_lobster.core.values import ExtractedValue, ValueSpec
-from web_lobster.verify.evidence import EvidenceCheck, TextCheck
+from web_lobster.verify.evidence import EvidenceCheck, TextCheck, ValueCheck
 from web_lobster.verify.receipts import page_label
 from web_lobster.models.base import ModelBackend
 from web_lobster.utils.logging import get_logger
@@ -72,6 +72,15 @@ def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
             search = _SEARCH_GOAL.match(goal.goal)
             if search:
                 goal.evidence = [TextCheck(contains=search.group("term").strip())]
+        if not goal.evidence and goal.extract:
+            # A step whose whole job is reading can prove itself: the value was
+            # read and passed its shape checks. Without this it falls to a model's
+            # opinion, which is why runs that got the right answer still came back
+            # unverified (live run 28).
+            goal.evidence = [
+                ValueCheck(name=spec.name, op="!=", value=None) for spec in goal.extract
+            ]
+            logger.info("planner_read_step_given_value_evidence", sub_goal=goal.id)
         if kept and _READ_ONLY_GOAL.match(goal.goal) and not any(
             check.type in ("url", "request") for check in goal.evidence
         ):
