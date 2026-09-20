@@ -99,6 +99,18 @@ class TestTextCheckSeesFields:
     def test_still_fails_when_nothing_holds_it(self):
         assert not evaluate(TextCheck(contains="New York"), _context(page_fields=["Tokyo"])).passed
 
+    def test_a_date_matches_however_the_site_writes_it(self):
+        # A plan asks for 2026-10-15; Google Flights answers "Thu, Oct 15".
+        for held, rendering in (("Thu, Oct 15", "Oct 15"), ("15 October 2026", "15 Oct"),
+                                ("departing 10/15/2026", "10/15/2026")):
+            result = evaluate(TextCheck(contains="2026-10-15"), _context(page_fields=[held]))
+            assert result.passed, held
+            assert rendering in result.detail
+
+    def test_another_day_is_still_another_day(self):
+        assert not evaluate(TextCheck(contains="2026-10-16"), _context(page_fields=["Thu, Oct 15"])).passed
+        assert not evaluate(TextCheck(contains="2026-11-15"), _context(page_fields=["Thu, Oct 15"])).passed
+
 
 class TestRequestCheck:
     def test_needs_method_url_and_success_status(self):

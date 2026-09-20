@@ -161,6 +161,59 @@ async def test_a_guessed_url_that_404s_does_not_prove_the_page(sites, tmp_path):
     assert "answered 404" in receipt.checks[0].detail
 
 
+async def test_a_goal_stops_the_moment_it_is_proven(sites, tmp_path):
+    a, _ = sites
+    # The executor kept acting after a sub-goal was met: on the practice site it
+    # signed in, clicked on into the menu, and logged itself back out (run 28).
+    goal = SubGoal(id=1, goal="Go to checkout", success_criteria="Checkout is open",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    clicks = 0
+
+    async def decide(**kwargs):
+        nonlocal clicks
+        clicks += 1
+        return Action(action=ActionType.CLICK, element_id=element_id(kwargs["observation"], "Go to checkout"))
+
+    orchestrator.executor.decide = AsyncMock(side_effect=decide)
+
+    result = await orchestrator.run("Go to checkout", start_url=f"{a.origin}/links")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    assert clicks == 1  # asked once; the link took it there, and nothing else was tried
+    # One action, then a step that noticed the goal was met instead of acting.
+    assert result.steps_taken == 2
+    assert [line.split(". ", 1)[1] for line in result.actions] == ["click (el=1)"]
+    [receipt] = result.receipts
+    assert receipt.achieved and receipt.basis == "evidence"
+
+
+async def test_a_goal_already_proven_when_it_starts_still_runs(sites, tmp_path):
+    a, _ = sites
+    # Stopping early must need a check that went from failing to passing, or a
+    # goal whose url already matched would finish without doing its work.
+    goal = SubGoal(id=1, goal=TASK, success_criteria="Booking is confirmed",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    seen = 0
+
+    async def decide(**kwargs):
+        nonlocal seen
+        seen += 1
+        if seen == 1:
+            return Action(action=ActionType.SCROLL)
+        return Action(action=ActionType.DONE, reason="done")
+
+    orchestrator.executor.decide = AsyncMock(side_effect=decide)
+
+    result = await orchestrator.run(TASK, start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    assert seen == 2  # it kept working until it said so itself
+
+
 async def test_typing_with_nothing_to_type_is_refused(sites, tmp_path):
     a, _ = sites
     # Five of Google Flights' forty steps were type actions with no text, each

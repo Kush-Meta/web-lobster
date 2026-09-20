@@ -62,7 +62,7 @@ from web_lobster.core.briefing import (
 )
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.values import ExtractedValue, ValueSpec, origin_of, render_value_refs
-from web_lobster.models.planner import Planner
+from web_lobster.models.planner import Planner, reads_only
 from web_lobster.models.executor import Executor
 from web_lobster.models.validator import Validator
 from web_lobster.models.extractor import PAGE_TEXT_LIMIT, Extractor
@@ -469,7 +469,8 @@ class Orchestrator:
         for goal in plan.sub_goals:
             # Same rule the parser applies, for values added after it ran: a step
             # that reads proves it read, instead of falling to a model verdict.
-            if goal.extract and not goal.evidence:
+            # Only a reading step: having read a number doesn't prove a search ran.
+            if goal.extract and not goal.evidence and reads_only(goal.goal):
                 goal.evidence = [
                     ValueCheck(name=spec.name, op="!=", value=None) for spec in goal.extract
                 ]
@@ -628,6 +629,7 @@ class Orchestrator:
         # so the model never loses the diagnostic history of this sub-goal.
         reflections: list[str] = []
         went_back_from_nothing = False
+        proven_at_start = await self._cheap_checks(sub_goal)
 
         proven, self._proven_by_skip = self._proven_by_skip is sub_goal, None
         if (proven or await self._already_there(sub_goal)) and await self._verify(
@@ -686,6 +688,23 @@ class Orchestrator:
                         Action(action=ActionType.GO_BACK, reason="Nothing on the page")
                     )
                     continue
+
+                # --- ALREADY PROVEN? ---
+                # The executor kept acting after a sub-goal was met: on the
+                # practice site it signed in, clicked on into the menu, and
+                # logged itself back out (live run 28). Checked here, on a page
+                # that has settled, and only when a check that was failing when
+                # this goal began now passes — otherwise a goal whose url
+                # already matched would finish without doing its work.
+                if proven_at_start is not None and action_count_this_attempt > 1:
+                    now = await self._cheap_checks(sub_goal)
+                    if now and all(now.values()) and any(
+                        not was for name, was in proven_at_start.items() if name in now
+                    ):
+                        logger.info("subgoal_proven_mid_step", id=sub_goal.id)
+                        if await self._verify(sub_goal, goal_view, observation):
+                            return True
+                        proven_at_start = None  # a value is missing; let it work on
 
                 # --- LOGIN DETECTION ---
                 if observation.login_detected and not getattr(self, "_login_alerted", False):
@@ -1253,6 +1272,26 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "gaps": context.gaps if context else [],
             "plan_issues": list(self._plan_issues),
         }
+
+    async def _cheap_checks(self, sub_goal: SubGoal) -> Optional[dict[str, bool]]:
+        """How a sub-goal's code-checkable evidence stands, without a model call.
+
+        Value checks are left out: reading a value costs a model call, so those
+        wait for the executor to say it's done. None when there's nothing here
+        that code can settle.
+        """
+        checks = [check for check in sub_goal.evidence if check.type in ("url", "text")]
+        if not checks:
+            return None
+        context = EvidenceContext(
+            page_url=self.browser.current_url,
+            page_text=await self.browser.page_text(),
+            events=self.browser.network.since(self._goal_network_start),
+            values=dict(self.state.values),
+            page_status=self.browser.page_status,
+            page_fields=await self._page_fields(),
+        )
+        return {check.describe(): evaluate(check, context).passed for check in checks}
 
     async def _page_fields(self) -> list[str]:
         """What the page's fields hold now, for checks about what was entered."""

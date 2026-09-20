@@ -16,6 +16,7 @@ import json
 import operator
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -190,13 +191,34 @@ def _check_text(check: TextCheck, context: EvidenceContext) -> tuple[bool, str]:
     plan that proves "I entered New York" with a text check could never pass.
     Live run 27 spent a whole step budget on one. A field holding what was
     typed is proof of the agent's own action, so it counts.
+
+    A date is matched however the site writes it. A plan asks for 2026-10-15
+    and Google Flights answers "Thu, Oct 15": the same day, so the same proof.
     """
-    wanted = _normalize(check.contains)
-    if wanted in _normalize(context.page_text):
-        return True, "found on the page"
-    if any(wanted in _normalize(value) for value in context.page_fields):
-        return True, "found in a field on the page"
+    page, fields = _normalize(context.page_text), [_normalize(v) for v in context.page_fields]
+    for wanted, rendering in _renderings(check.contains):
+        where = f" as {rendering}" if rendering else ""
+        if wanted in page:
+            return True, f"found on the page{where}"
+        if any(wanted in value for value in fields):
+            return True, f"found in a field on the page{where}"
     return False, "not found on the page or in its fields"
+
+
+def _renderings(term: str) -> list[tuple[str, str]]:
+    """The term as asked for, and — for an ISO date — the ways sites write it."""
+    asked = [(_normalize(term), "")]
+    try:
+        day = date.fromisoformat(term.strip())
+    except ValueError:
+        return asked
+    forms = [
+        f"{day:%b} {day.day}", f"{day:%B} {day.day}",       # Oct 15, October 15
+        f"{day.day} {day:%b}", f"{day.day} {day:%B}",       # 15 Oct, 15 October
+        f"{day.month}/{day.day}/{day.year}",                 # 10/15/2026
+        f"{day.day}/{day.month}/{day.year}",                 # 15/10/2026
+    ]
+    return asked + [(_normalize(form), form) for form in forms]
 
 
 def _check_value(check: ValueCheck, context: EvidenceContext) -> tuple[bool, str]:

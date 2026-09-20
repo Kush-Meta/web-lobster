@@ -37,10 +37,23 @@ _READ_ONLY_GOAL = re.compile(
     r"^\s*(extract|read|note|record|report|identify|determine|retrieve|copy|write down)\b",
     re.IGNORECASE,
 )
+# Steps whose whole job is reading something already on the page. Wider than
+# _READ_ONLY_GOAL, which decides folding: "find the price" reads, but it may
+# have to open the page first, so it isn't folded into the step before.
+_READS_ONLY_GOAL = re.compile(
+    r"^\s*(extract|read|note|record|report|identify|determine|retrieve|copy|write down"
+    r"|find|get|locate|look up|check)\b",
+    re.IGNORECASE,
+)
 # Keys models use for the goal text when they don't use "goal".
 _GOAL_KEYS = ("goal", "description", "sub_goal", "subgoal", "task", "name", "title", "objective", "action", "step")
 # A search step and its quoted term: "Search for 'Mount Everest'".
 _SEARCH_GOAL = re.compile(r"""^\s*search\b[^'"‘“]*['"‘“](?P<term>[^'"’”]{2,80})['"’”]""", re.IGNORECASE)
+
+
+def reads_only(goal: str) -> bool:
+    """Whether a step's whole job is reading what the page already shows."""
+    return bool(_READS_ONLY_GOAL.match(goal)) and not mentions_a_change(goal)
 
 
 def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
@@ -72,11 +85,16 @@ def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
             search = _SEARCH_GOAL.match(goal.goal)
             if search:
                 goal.evidence = [TextCheck(contains=search.group("term").strip())]
-        if not goal.evidence and goal.extract:
+        if not goal.evidence and goal.extract and reads_only(goal.goal):
             # A step whose whole job is reading can prove itself: the value was
             # read and passed its shape checks. Without this it falls to a model's
             # opinion, which is why runs that got the right answer still came back
             # unverified (live run 28).
+            #
+            # Only a reading step. A step that has to *do* something first — "search
+            # for round trips from New York to Tokyo" — is not proven by having read
+            # a number, and a Tokyo run came back verified on a price from an advert
+            # when this rule was wider than it should have been.
             goal.evidence = [
                 ValueCheck(name=spec.name, op="!=", value=None) for spec in goal.extract
             ]

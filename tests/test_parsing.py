@@ -196,6 +196,15 @@ That should work!'''
         checks = [(c.name, c.op, c.value) for g in goals for c in g.evidence if c.type == "value"]
         assert checks == [("backpack_price", "!=", None)]
 
+    def test_a_step_that_has_to_do_something_gets_no_free_proof(self):
+        # A Tokyo run came back verified on a price from an advert, because its
+        # one sub-goal had to run a search and was proven by having read a number.
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Search for round trips from New York to Tokyo, departing 2026-10-15",
+             "extract": [{"name": "cheapest_price", "type": "number"}]},
+        ]))
+        assert not [c for g in goals for c in g.evidence if c.type == "value"]
+
 
 class TestExecutorParsing:
     """Test the executor's action response parsing."""

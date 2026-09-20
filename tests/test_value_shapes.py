@@ -91,8 +91,14 @@ def test_the_callers_value_spec_beats_the_planners():
     [version, downloads] = plan.sub_goals[0].extract
     assert version.pattern == r"3\.\d+\.\d+"        # the caller's shape, not the planner's
     assert downloads.name == "downloads"              # never declared, read on the last step
-    # And the step that now reads can prove it read, rather than being judged.
-    assert [(c.name, c.op, c.value) for c in plan.sub_goals[0].evidence] == [
+    # Opening a page isn't proven by having read a number, so it gets no free
+    # proof; a reading step does.
+    assert plan.sub_goals[0].evidence == []
+    reading = TaskPlan(task="Read the version", sub_goals=[SubGoal(
+        id=1, goal="Read the latest version", success_criteria="Read", extract=[],
+    )])
+    reading = orchestrator._apply_requested_values(reading, context)
+    assert [(c.name, c.op, c.value) for c in reading.sub_goals[0].evidence] == [
         ("version", "!=", None), ("downloads", "!=", None),
     ]
 

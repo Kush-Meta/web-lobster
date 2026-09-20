@@ -141,3 +141,33 @@ async def test_typing_into_an_autocomplete_leaves_it_uncommitted(sites):
         assert "Chosen" not in await controller.page_text()
     finally:
         await controller.close()
+
+
+async def test_typing_confirms_the_dialog_it_opened(sites):
+    a, _ = sites
+    # A date box holds nothing until its picker is confirmed: live run 27 typed
+    # both dates and searched with neither.
+    controller = await _open(a, "/datebox")
+    try:
+        await controller.execute(Action(
+            action=ActionType.TYPE,
+            element_id=await _element_id(controller, "Departure"), text="2026-10-15",
+        ))
+        held = await controller._page.input_value("input")
+    finally:
+        await controller.close()
+    assert held == "Thu Oct 15"  # the site's own wording, kept because Done was pressed
+
+
+async def test_typing_confirms_nothing_when_no_dialog_opened(sites):
+    a, _ = sites
+    # The suggestion lists that committing on type damaged are not dialogs.
+    controller = await _open(a, "/combobox")
+    try:
+        await controller.execute(Action(
+            action=ActionType.TYPE, element_id=await _element_id(controller, "City"), text="Tokyo",
+        ))
+        assert "Chosen" not in await controller.page_text()
+    finally:
+        await controller.close()
+

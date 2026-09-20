@@ -95,6 +95,8 @@ Two more surfaced in the trials comparison (sections 4 and 5).
 
 **What changed:** every feature gets live runs before it's called done, and every run is written down, failures included, with what it showed.
 
+**And the records have to say what the agent did.** Two of the hardest failures this month were unreadable until run records kept the executor's action trail. One was a guessed URL that 404s into a blank single-page app; the other was the agent signing in and then clicking itself back out. Both were one line of trail each, and neither was guessable from the outcome.
+
 ## 3. Keep the planner blind to pages, including when it gets more context
 
 **Lesson:** the planner decides what the agent does, so nothing it reads may have been near a web page. That rule held when the planner got much more context in step 6, because every new input was checked against it.
@@ -126,15 +128,19 @@ Two more surfaced in the trials comparison (sections 4 and 5).
 | 15 | Verified, with "3.15" as the latest Python release. Evidence proved the downloads page was open; the value came from a pre-release row | Values can declare a `pattern` or `min` and `max`, enforced in code, and over MCP `verified` also requires every requested value (`f3c959d`) |
 | Trials | With the shape check, two python.org runs under the 14B-planner config returned no version rather than a wrong one. The runs weren't verified, and `missing_values` named the gap | — |
 | 28 | A url check proved a **blank page**. The planner guessed `saucedemo.com/login.html`; the server 404s, its single-page-app fallback redirects to a 200 and rewrites the address back, so the check saw the URL it asked for and no error. The executor then chose elements that weren't there for 35 steps | Two fixes: a url check fails on an error status, and an observation with no elements and no text ends the attempt after one step back |
+| Tokyo | Verified, with a price from an **advert**. The run never searched; its one sub-goal had to run a search and was proven by the new "a reading step proves it read" check, which reading any number satisfied | The check is only for a step whose whole job is reading. A step that has to do something first goes back to a model verdict, which is weaker and says so |
 | 29 | Verified, with the wrong commit: asked for the newest commit on a GitHub commits page, both runs returned a real one from the middle of the list | The reader returns the **last** match in whatever text it gets, identically every time, at any window size — but it can list them in page order. A value declares `pick: first`, the reader lists, code takes the end. 0 of 3 right became 3 of 3 right and verified |
 
 **Free-text answers are the least trustworthy output.** In the trials, the 7B baseline's free-text answer said "3.15" in all three python.org runs, while its typed value said 3.14.7 every time. That's why page-derived text is withheld from calling agents unless they ask for it.
+
+**A new check can create the failure it was meant to close.** The value-read check was added because runs that read the right answer came back unverified. Two days later it made a Tokyo run come back *verified* on an advert's price, because the planner gave a searching sub-goal no other evidence. Evidence is only as good as the match between what a step has to do and what its checks prove; widening a check to catch honest runs widens it for dishonest ones too. Both directions need a live run before they're believed.
 
 **Other checks have edges too:**
 
 - A `text` check proves only what the page displays, and a page can display anything (the `fake-success` trap).
 - A `request` check proves the site accepted a request, not what was in it (section 2).
 - A search step gets a text check for its search term. That proves the page shows the term, and nothing more.
+- A `text` check now matches a date however the site writes it, and passes on what a field holds. Both widen what counts as the same fact; neither makes a page's claim stronger than it was.
 - A `url` check proves an address, not a page. Since run 28 an error status fails it — but a guessed URL that redirects into a blank 200 still matches, which is why an empty observation now ends the attempt instead.
 
 **Who owns a value's shape.** The planner is told which values the caller wants, and writes its own specs for them — dropping the caller's pattern, bounds, and `pick`. It read an unshaped version in two of three python.org runs, and ignored "the first one on the page" entirely on GitHub. The caller's spec now replaces the planner's by name, and a requested value the plan never mentions is read on the last step, so asking for it is enough.
@@ -172,6 +178,8 @@ Two more surfaced in the trials comparison (sections 4 and 5).
 | Guessing exact phrases as evidence | Trials, 7B Everest runs 1 and 3 | — | Not fixed yet. The article step had a url check, which passed, and a text check for "elevation of Mount Everest is", a phrase Wikipedia never shows. The browser was on the right page, and the step could never pass |
 
 The last row is the URL-guessing mistake again, with text instead. Treating sentence-like text checks as guesses when a url check already pins the page is the planned fix.
+
+**Doing is not the same as committing.** Three live failures were the same shape one layer apart: a city typed into a combobox, a date typed into a picker, and a form left for the next click to discard. The value reaches the field and the site throws it away, because these widgets commit only when something is chosen or confirmed. Typing is not entering. What made it safe to fix was being specific about the gesture: press the confirm button of a dialog *the typing itself opened*, which is a thing search boxes never do — committing the suggestion lists they do open cost 0 of 3 Everest runs when it was tried.
 
 ## 6. One run is an anecdote
 

@@ -42,7 +42,7 @@ Based on live runs 14 to 21 ([notes](live-testing.md)). Each phase says what fin
 
 ### Phase 1: make results measurable and trustworthy
 
-*Status:* items 1 to 4 are built (`f3c959d`); items 6 and 7 followed from reading three harder tasks' failures ([notes](live-testing.md#reading-the-three-failures-and-fixing-what-they-showed-2026-09-19)). Item 5 is still open.
+*Status:* items 1 to 4 are built (`f3c959d`); 6 to 10 followed from reading three harder tasks' failures ([notes](live-testing.md#reading-the-three-failures-and-fixing-what-they-showed-2026-09-19)). Item 5 is still open, and what's left of item 10 is really a new one: the executor picks the wrong verb and the wrong element on a page it has to drive.
 
 1. **A repeat-run tool.** Run a task N times against a known answer and report the success rate, the correct-value rate, and median steps and time. Every later change is judged with it. *Done when* a live trial of a task is one command, and its report goes into the notes.
 2. **Shape checks on values.** A `pattern`, `min` and `max`, or an allowed list on requested values, enforced in code, so a misread like run 15's "3.15" can't come back as verified. *Done when* a value that fails its shape is rejected in a test and in a live rerun.
@@ -52,8 +52,8 @@ Based on live runs 14 to 21 ([notes](live-testing.md)). Each phase says what fin
 6. **The caller's value checks win.** ~~When the planner declares a value with the same name as one the caller requested, the caller's `pattern`, `min`, and `max` are dropped; it happened in two of three python.org trials.~~ **Done.** The caller's spec replaces the planner's by name, and a requested value the plan never declares is read on the last step.
 7. **Values that mean "the first one".** ~~Asked for the newest commit on a GitHub commits page, both runs returned a real commit from the middle of the list, and both came back verified.~~ **Done.** A value can declare `pick: first` or `last`; the reader is asked to list every match in page order and code takes the end. The same task went from 0 of 3 right (verified and wrong) to **3 of 3 right and verified**.
 8. **A step that only reads can prove it read.** Such a step used to have no evidence and fall to a model verdict, so runs that read the right value came back unverified. **Done:** it gets a `{{$value}} was read` check.
-9. **Dates the way a site writes them.** With dates supplied, the Tokyo task proved three of five sub-goals, then failed both date steps: it typed `2026-10-15`, and Google Flights shows the date its own way, so the check couldn't match. *Done when* a date value entered on a real booking site is proven by code.
-10. **The executor wanders.** On the practice site it signed in, clicked around, logged itself back out, and retyped the credentials — once putting the username in the password field. It also emits `type` actions with no text. *Done when* repeated sign-in runs finish without re-entering credentials.
+9. **Dates the way a site writes them.** ~~With dates supplied, the Tokyo task proved three of five sub-goals, then failed both date steps.~~ **Done.** A `type` that opens a dialog presses that dialog's own Done, and a text check matches a date however the site writes it. On Google Flights one `type` action now leaves `Thu, Oct 15` in the field and the plan's `2026-10-15` check passes.
+10. **The executor wanders.** ~~On the practice site it signed in, clicked around, logged itself back out, and retyped the credentials.~~ **Done.** A sub-goal ends the moment a check that was failing when it began passes. Sign-in went to 3 of 3 right and verified, from 40 steps to 15, and the known tasks came back verified 3 of 3. What's left of it is the executor's choice of verb and element: on Google Flights it spent forty steps moving between the two city boxes.
 
 ### Phase 2: a stronger planner
 

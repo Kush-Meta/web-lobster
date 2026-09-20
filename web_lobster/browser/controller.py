@@ -108,6 +108,28 @@ _CLEAR_FOCUSED_INPUT_JS = """
 
 # True when the focused field completes text as you type (aria-autocomplete), where
 # key-by-key typing races the browser's own completions.
+_OPEN_DIALOGS_JS = """() => [...document.querySelectorAll('[role=dialog], dialog')]
+  .filter(el => el.offsetParent).length"""
+
+# A field that opens a dialog keeps its value only when the dialog is confirmed:
+# Google Flights' date boxes hold nothing until "Done" is pressed. Search boxes
+# open a listbox, never a dialog, so this can't touch them.
+_DIALOG_CONFIRM_JS = """() => {
+  const dialogs = [...document.querySelectorAll('[role=dialog], dialog')].filter(el => el.offsetParent);
+  const dialog = dialogs[dialogs.length - 1];
+  if (!dialog) return null;
+  const words = ['done', 'ok', 'apply', 'confirm', 'save', 'set', 'select'];
+  for (const button of dialog.querySelectorAll('button, [role=button]')) {
+    if (!button.offsetParent) continue;
+    const label = ((button.innerText || button.getAttribute('aria-label') || '').trim()).toLowerCase();
+    if (!words.includes(label)) continue;
+    const rect = button.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: label};
+  }
+  return null;
+}"""
+
 _FIELD_VALUES_JS = """() => [...document.querySelectorAll('input, textarea, select')]
   .map(el => (el.value || '').trim()).filter(value => value)"""
 
@@ -266,9 +288,12 @@ class BrowserController:
             timeout=self.config.default_timeout * 1000
         )
 
-    async def _type(self, element_id: Optional[int], text: str) -> None:
+    async def _type(self, element_id: Optional[int], text: str) -> bool:
+        """Enter text. Returns True when a dialog the field opened was confirmed."""
         if element_id is None:
             raise ValueError("type requires element_id")
+
+        dialogs_before = await self._page.evaluate(_OPEN_DIALOGS_JS)
 
         el = self._find_element(element_id)
 
@@ -328,6 +353,28 @@ class BrowserController:
             # Type character-by-character so autocomplete listeners fire on each keystroke.
             await self._page.keyboard.type(text, delay=70)
 
+        return await self._confirm_dialog(dialogs_before)
+
+    async def _confirm_dialog(self, dialogs_before: int) -> bool:
+        """Press a dialog's confirm button, when typing is what opened it.
+
+        A date box holds nothing until its picker is confirmed: live run 27 typed
+        both dates and searched with neither. Only a dialog that wasn't open
+        before counts, and only its own Done-shaped button is pressed, so a
+        suggestion list — which is where committing on type did damage — is
+        never touched.
+        """
+        await asyncio.sleep(0.4)
+        if await self._page.evaluate(_OPEN_DIALOGS_JS) <= dialogs_before:
+            return False
+        confirm = await self._page.evaluate(_DIALOG_CONFIRM_JS)
+        if not confirm:
+            return False
+        logger.info("dialog_confirmed", button=confirm["text"])
+        await self._page.mouse.click(confirm["x"], confirm["y"])
+        await asyncio.sleep(0.3)
+        return True
+
     async def _triple_click(self, element_id: Optional[int]) -> None:
         """Triple-click to select all text in a field — ideal for clearing pre-filled inputs."""
         if element_id is None:
@@ -385,7 +432,8 @@ class BrowserController:
             return
 
         logger.info("select_on_combobox", element_id=element_id)
-        await self._type(element_id, text)
+        if await self._type(element_id, text):
+            return  # a dialog took it
         if not await self._take_suggestion():
             # No list appeared: Enter is what these widgets accept otherwise.
             await self._page.keyboard.press("Enter")

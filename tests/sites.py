@@ -52,6 +52,23 @@ def build_sites() -> tuple[Site, Site]:
         "/login.html": (404, {"Content-Type": "text/html"}, "<html><body><h1>Not found</h1></body></html>"),
         # And what it gets on a single-page app: a 200 with nothing rendered.
         "/nothing": html(""),
+        # A Google-Flights-style date box: typing opens a dialog, and the field
+        # keeps nothing until the dialog's Done is pressed.
+        "/datebox": html(
+            '<input aria-label="Departure" autocomplete="off">'
+            '<div id="picker" role="dialog" hidden><button>Reset</button><button>Done</button></div>'
+            '<script>'
+            'const input = document.querySelector("input");'
+            'const picker = document.getElementById("picker");'
+            'let typed = "";'
+            'input.addEventListener("input", e => { typed = e.target.value; picker.hidden = false; });'
+            'picker.querySelector("button:last-child").addEventListener("click", () => {'
+            '  picker.hidden = true;'
+            '  const day = new Date(typed + "T00:00:00");'
+            '  input.value = isNaN(day) ? typed : day.toDateString().slice(0, 10);'
+            '});'
+            '</script>'
+        ),
         "/dropdown": html(
             '<select aria-label="City"><option>Pick one</option><option>New York</option>'
             '<option>Tokyo</option></select><p id="chosen"></p>'

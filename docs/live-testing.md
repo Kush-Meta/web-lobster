@@ -246,6 +246,59 @@ On the sign-in task the change is in what "verified" covers: the step that reads
 
 Sub-goal 3 is the check that could never have passed before. Mandate-block noise fell from **49 of 95** history entries to **4 of 50**, and there were no empty `type` actions at all. What stops it now is narrower than anything above: it typed `2026-10-15` into the date box, and Google Flights reformats the date it shows, so a text check for the ISO string can't match. Dates written the way a site writes them are the next thing in the way.
 
+### The date format and the wandering (2026-09-20)
+
+The two things left in the way after the last round, both now fixed and measured.
+
+**Dates: the field holds nothing until its dialog is confirmed.** Typing `2026-10-15` into Google Flights' Departure box does land in the field — and then the picker it opened throws it away, because these boxes commit only when "Done" is pressed. That is the same shape as the city combobox, one layer along: the run typed both dates and searched with neither.
+
+So a `type` that **opens a dialog** now presses that dialog's own confirm control — a button reading Done, OK, Apply, Confirm, Save, Set or Select, inside a `[role=dialog]` that wasn't open before the typing started. This cannot bring back the harm that committing suggestions did (0 of 3 Everest runs): checked live, neither Wikipedia's search box nor python.org's opens a dialog at all, and a suggestion list is not one.
+
+The second half is the check. Once committed, the field reads `Thu, Oct 15` — the site's wording, not the plan's — so a text check for `2026-10-15` still couldn't match. A text check now matches a date however a site writes it: `Oct 15`, `October 15`, `15 Oct`, `15 October`, `10/15/2026`, `15/10/2026`. A different day still fails.
+
+End to end on the live site, with one plain `type` action and nothing else:
+
+```
+dialog_confirmed button=done
+FIELDS: ['Atlanta', 'Atlanta', 'Thu, Oct 15', 'Thu, Oct 15']
+CHECK: True | found in a field on the page as Oct 15
+```
+
+**The wandering: a goal is done when it is provably done.** The executor kept acting after a sub-goal was met — on the practice site it signed in, carried on clicking into the menu, and logged itself back out, which failed the sub-goal it had just satisfied. Now the checks code can settle (url and text, no model call) are evaluated at the top of each step, and a goal whose checks have gone from failing to passing ends there. It needs a check that was **false when the goal began**, so a goal whose url already matched still does its work.
+
+| Task | Before | After |
+|---|---|---|
+| Sign in and read a price | 2/3 right, 2/3 verified, 40 steps, 218 s | **3/3 right and verified**, **14 steps**, **63 s** |
+| Tokyo (Google Flights) | 1 of 5 sub-goals proven, both dates failed | **5 of 6 proven, both dates among them**; the search step still fails |
+| Eiffel / python.org / Everest | right, 2 of 3 verified | **all three right and verified**, 0 / 3 / 8 steps |
+
+The sign-in trail is the whole fix in one line — step 7 signs in, and step 8 is already working on the next goal:
+
+```
+5. type (el=1) "{{username}}"
+6. type (el=2) "{{password}}"
+7. click (el=3)          ← proven here; the goal ends
+8. click (el=10)
+```
+
+No credentials re-entered, no logout, and `secret_sauce` in none of the records. Every sub-goal in all three runs was proven by code, with no model verdicts.
+
+**Tokyo came back "done, verified" — and it was wrong.** That is the most useful result of the round, because the false proof was one of this week's own fixes. The run never set a date and never searched: it spent 21 steps moving between the two city boxes, read `cheapest_price` as **129.0** — a promo card on the home page — and its single sub-goal, "Search for round trips from New York to Tokyo, departing 2026-10-15", had exactly one piece of evidence: the `{{$cheapest_price}} was read` check that a reading step is now given.
+
+Reading a number does not prove a search ran. The rule was too wide: it gave that proof to any sub-goal with values and no evidence, including one whose job was to *do* something. It now applies only to a step whose whole job is reading — one that starts with read, find, get, locate, look up, check, extract, note, record, report, identify, determine, retrieve, copy or write down, and doesn't mention changing anything. A searching step with no evidence goes back to a model verdict, which is weaker but says so in its receipt.
+
+With the rule narrowed, two more runs came back **not done and not verified** — the honest answer — and they show the date fix working in a live agent run for the first time:
+
+```
+goal 2  "Clear the 'Where from?' field and type 'New York'"   ✓ text
+goal 3  "Clear the 'Where to?' field and type 'Tokyo'"        ✓ text
+goal 4  "Set the Departure date to 2026-10-15"                ✓ text
+goal 5  "Set the Return date to 2026-10-22"                   ✓ text
+goal 6  "Search the site for flights from New York to Tokyo…"  ✗ text
+```
+
+Five of six sub-goals proven by code, both dates among them, where before this round both date steps failed. What's left is the last one: running the search. Both runs spent their remaining steps on the city boxes instead, which is the executor's choice of verb and element — no browser-layer fix reaches it, and it is what's left of roadmap item 10. The experiment's `cheapest_price` also wants pinning to the results page before it means anything, since the home page is full of prices.
+
 ## Measured with `web-lobster trials` (step 7)
 
 The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.
