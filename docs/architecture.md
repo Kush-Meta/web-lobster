@@ -120,12 +120,14 @@ Step by step, with the code that does it:
 | Plan | Sub-goals, each with optional `extract` (values to read) and `evidence` (checks). Small-model mistakes are tidied: guessed search URLs are dropped, and extract and click-level steps are folded into the outcomes they belong to | `Planner.plan`, `tidy_sub_goals` |
 | Review | Code checks the plan against the mandate and itself; one revision round | `review_plan`, `Orchestrator._review_plan`, `Planner.revise` |
 | Already there? | A sub-goal that only opens a page counts as done when its url check already passes | `Orchestrator._already_there` |
-| Act | Observe → executor picks one action → element check → mandate pre-check → safety gate → execute → report what the network layer blocked | `Orchestrator._execute_subgoal`, `browser/`, `models/executor.py` |
+| Act | Observe → executor picks one action → element check → nothing-to-enter check → mandate pre-check → safety gate → execute → report what the network layer blocked | `Orchestrator._execute_subgoal`, `browser/`, `models/executor.py` |
+| Proven already? | Before deciding anything, the checks code can settle (`url`, `text` — no model call) are re-evaluated. A goal whose checks have gone from failing to passing ends there, so the executor can't carry on past what it achieved | `Orchestrator._cheap_checks` |
+| Dead page? | An observation with no elements and no text ends the attempt after one step back, instead of spending the budget on elements that aren't there | `Orchestrator._execute_subgoal` |
 | Stuck | Repeated actions trigger a reflection and a retry | `utils/retry.py` `StuckDetector`, `Executor.reflect` |
 | Verify | Evidence checks (with a short wait while requests are in flight), or the validator model. Values declared on the sub-goal are read and type-checked | `Orchestrator._verify`, `verify/evidence.py`, `models/extractor.py`, `core/values.py` |
 | Seal | A receipt per sub-goal, SHA-256 chained to the previous one | `verify/receipts.py` |
 | Recover | Skip ahead if the failed step reached a later step's proven page; otherwise replan from trusted facts | `_skip_to_later_goal`, `_replan` |
-| Finish | Answer extracted from the final page (quarantined), learnings written from trusted inputs, memory saved | `_extract_answer`, `_save_to_memory` |
+| Finish | Answer extracted from the final page (quarantined), learnings written from trusted inputs, memory saved. The record keeps a redacted trail of every action, including the blocked and refused ones | `_extract_answer`, `_save_to_memory`, `_action_trail` |
 
 ## Components
 
@@ -170,8 +172,8 @@ Each role (planner, executor, validator) picks its own backend in config. The ex
 
 | Module | Role |
 |---|---|
-| `browser/controller.py` | Playwright lifecycle, action execution, typing granted data at the last moment, main-content page text |
-| `browser/observer.py` | Page state: interactive elements, accessibility tree, DOM summary, screenshots, login detection |
+| `browser/controller.py` | Playwright lifecycle, action execution, typing granted data at the last moment, main-content page text, what the page's fields hold, and the status the document itself answered. Knows how real widgets commit: a picker's Done, a combobox's suggestion, a `<select>`'s option |
+| `browser/observer.py` | Page state: interactive elements, accessibility tree, DOM summary, screenshots, login detection. Skips elements covered by something else |
 | `browser/annotator.py` | Numbered badges on screenshots so vision models can ground element ids |
 | `actions/safety.py`, `actions/registry.py` | Safety gate (confirmation keywords, URL allow/block lists, per-sub-goal action cap) and the action registry |
 
@@ -182,7 +184,7 @@ Each role (planner, executor, validator) picks its own backend in config. The ex
 | `mandate/schema.py` | The mandate: origins, data grants, write rules, expiry, and URL pattern matching |
 | `mandate/enforcer.py` | Routes every request and WebSocket through the mandate. Checks each redirect hop, blocks data leaving for ungranted origins, and decides which blocks the executor should hear about |
 | `verify/network.py` | What the browser sent and got back, with URLs redacted |
-| `verify/evidence.py` | `url`, `request`, `text`, and `value` checks, evaluated in code |
+| `verify/evidence.py` | `url`, `request`, `text`, and `value` checks, evaluated in code. A `url` check fails on an error page; a `text` check also reads what the page's fields hold, and matches a date however a site writes it; a `value` check with a null value asks only whether the value was read |
 | `verify/receipts.py` | Receipts, the hash chain, and chain verification |
 
 ### Measurement
@@ -218,7 +220,9 @@ Who sees what:
 flowchart TB
     A["Executor proposes an action"] --> B{"Element id on the page?"}
     B -- no --> R1["Rejected, told which ids exist"]
-    B -- yes --> C{"Mandate pre-check<br/>(navigation, typing a placeholder)"}
+    B -- yes --> B2{"Something to enter?"}
+    B2 -- no --> R0["Rejected; typing nothing<br/>clears the field"]
+    B2 -- yes --> C{"Mandate pre-check<br/>(navigation, typing a placeholder)"}
     C -- blocked --> R2["Reported to the executor"]
     C -- ok --> D{"Safety gate<br/>(block lists, confirmations)"}
     D -- declined --> R3["Reported to the executor"]
@@ -243,12 +247,12 @@ All inter-component data is Pydantic, in `core/schemas.py` unless noted.
 | `Observation` | URL, title, interactive elements, accessibility tree, DOM summary, page text, screenshots, login flag |
 | `SubGoal` / `TaskPlan` | Goal, success criteria, status, attempts, `extract` value specs, and `evidence` checks |
 | `TaskBrief` / `Question` / `PlanningContext` (`core/briefing.py`) | The brief, typed questions with defaults, and everything the planner may know |
-| `ValueSpec` / `ExtractedValue` (`core/values.py`) | A value to read, with an optional shape (`pattern`, `min`, `max`) enforced in code, and the checked result with its origin |
+| `ValueSpec` / `ExtractedValue` (`core/values.py`) | A value to read, with an optional shape (`pattern`, `min`, `max`) and an optional position (`pick: first` / `last`), both enforced in code, and the checked result with its origin |
 | `Mandate` / `DataGrant` / `WriteRule` (`mandate/schema.py`) | The approved scope |
 | `Violation` (`mandate/enforcer.py`) | A blocked request: kind, URL, detail, resource type, main-frame flag |
 | `EvidenceCheck` (`verify/evidence.py`) | `url`, `request`, `text`, or `value` checks, and their results |
 | `Receipt` (`verify/receipts.py`) | A sub-goal's outcome, basis, checks, writes sent, page, and chain digest |
-| `AgentResult` (`core/orchestrator.py`) | Everything a run produced, including the brief, answers, and whether it needs input |
+| `AgentResult` (`core/orchestrator.py`) | Everything a run produced, including the brief, answers, whether it needs input, and the redacted action trail |
 
 ## Surfaces
 
@@ -296,7 +300,11 @@ The details are in [mcp-server.md](mcp-server.md).
 
 ## Design records
 
-- [roadmap.md](roadmap.md): where the project is going, and the known gaps.
+- [roadmap.md](roadmap.md): where the project is going, the known gaps, and the ideas that were measured and dropped.
+- [learnings.md](learnings.md): what building and running it has taught us, with the evidence behind each lesson.
+- [live-testing.md](live-testing.md): every live run, what broke, and what was fixed.
+- [mcp-server.md](mcp-server.md): the MCP tools in detail.
 - [design/step-5-mcp-server.md](design/step-5-mcp-server.md): serving other agents.
 - [design/step-6-planner-briefing.md](design/step-6-planner-briefing.md): thinking before acting.
-- [live-testing.md](live-testing.md): what broke on live sites, and what was fixed.
+- [design/step-7-trials-and-planners.md](design/step-7-trials-and-planners.md): measuring runs, and a stronger planner.
+- [design/step-8-signed-in-tasks.md](design/step-8-signed-in-tasks.md): persistent profiles and a password manager (designed, not built).

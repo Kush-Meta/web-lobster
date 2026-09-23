@@ -67,7 +67,7 @@ Runs a task in a real browser under a mandate. Annotated as destructive and open
 | `mandate.allow_any_write` | bool | `false` | Allow any change on the allowed sites instead of listing writes |
 | `mandate.expires_in_minutes` | number | `30` | Everything stops after this (maximum 240) |
 | `start_url` | string | first non-wildcard origin | Must be on an allowed site |
-| `values` | `{name, type, description?, choices?, pattern?, min?, max?}`[] | `[]` | Typed values to read from the final page: number, integer, boolean, date, choice, text. `pattern` (text) must match the whole value, and `min` and `max` bound numbers; a value that fails them counts as not read |
+| `values` | `{name, type, description?, choices?, pattern?, min?, max?, pick?}`[] | `[]` | Typed values to read from the final page: number, integer, boolean, date, choice, text. `pattern` (text) must match the whole value, and `min` and `max` bound numbers; a value that fails them counts as not read. `pick: "first"` or `"last"` is for a page that shows a list of them — the reader lists every match in page order and code takes the end you asked for |
 | `include_page_text` | bool | `false` | Also return the page-derived answer and text values |
 | `max_steps` | int | config | Cap on browser actions |
 | `notes` | string | none | The user's standing preferences or context, followed as the user's instructions |

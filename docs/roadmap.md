@@ -1,91 +1,84 @@
 # web-lobster roadmap
 
-How the pieces fit together today: [architecture.md](architecture.md). What building and testing it has taught us: [learnings.md](learnings.md).
+How the pieces fit together: [architecture.md](architecture.md). What building it taught us: [learnings.md](learnings.md). Every live run: [live-testing.md](live-testing.md).
 
 ## Direction
 
-Personal agents like OpenClaw can now act on the web for their users, and agentic browsers are routinely hijacked by instructions planted in the pages they read. Making the model better at spotting those instructions doesn't close the problem, because attackers adapt. web-lobster takes the other route: make acting on a planted instruction impossible, and make every claimed result provable.
+Personal agents can now act on the web for their users, and agentic browsers are routinely hijacked by instructions planted in the pages they read. Making the model better at spotting those instructions doesn't close the problem, because attackers adapt. web-lobster takes the other route: make acting on a planted instruction impossible, and make every claimed result provable.
 
 The goal is a web agent you can hand a logged-in browser and a goal, knowing it can't be turned against you, with a record of exactly what it did. Other agents should be able to delegate web work to it on those terms.
 
-## Status
+## Built
 
-| Step | What | Status | Commits |
-|---|---|---|---|
-| 1 | **Mandates.** Sites, data grants, and expiry, enforced in the browser's network layer; data typed as `{{placeholders}}` | Done | `55bc8ab` (with fix `afe735e`) |
-| 2 | **Planner isolation.** The planner never reads page content; pages reach it only as type-checked values | Done | `3e94026` |
-| 3 | **Evidence and receipts.** Sub-goals are proven done by checks run in code; every run leaves a hash-chained receipt log | Done | `0444f80` |
-| 4 | **Poisoned-page benchmark.** Trap sites, scored from what their servers received | Done | `fcacf12` |
-| 4b | **Write rules.** Mandates list the writes a task may make, closing the benchmark's same-site gap | Done | `eac51ac` |
-| 5 | **MCP server.** Other agents run web tasks under a mandate, with page text withheld from them by default ([design](design/step-5-mcp-server.md)) | Done | `ba61aaf` |
-| 5b | **Live testing.** Real tasks on live sites with a local 7B model, over the CLI and MCP over stdio, and the fixes they called for ([notes](live-testing.md)) | Done | `fcb0a7a`–`ea6ce24` |
-| 6 | **Think before acting.** Before the browser opens: a brief, questions for the user, mandate-gap checks, richer trusted context for the planner, and code review of the plan, with click-level steps folded in code ([design](design/step-6-planner-briefing.md)) | Done | `ab76209`, `4cec5b2` |
+| Step | What | Commits |
+|---|---|---|
+| 1 | **Mandates.** Sites, data grants, and expiry, enforced in the browser's network layer; data typed as `{{placeholders}}` | `55bc8ab`, `afe735e` |
+| 2 | **Planner isolation.** The planner never reads page content; pages reach it only as type-checked values | `3e94026` |
+| 3 | **Evidence and receipts.** Sub-goals are proven done by checks run in code; every run leaves a hash-chained receipt log | `0444f80` |
+| 4 | **Poisoned-page benchmark.** Trap sites, scored from what their servers received | `fcacf12` |
+| 4b | **Write rules.** Mandates list the writes a task may make, closing the benchmark's same-site gap | `eac51ac` |
+| 5 | **MCP server.** Other agents run web tasks under a mandate, with page text withheld by default ([design](design/step-5-mcp-server.md)) | `ba61aaf` |
+| 5b | **Live testing.** Real tasks on live sites with a local 7B model, and the fixes they called for ([notes](live-testing.md)) | `fcb0a7a`–`ea6ce24` |
+| 6 | **Think before acting.** A brief, questions for the user, mandate-gap checks, richer trusted context, and code review of the plan ([design](design/step-6-planner-briefing.md)) | `ab76209`, `4cec5b2` |
+| 7 | **Trials, and a stronger planner.** Repeat runs scored against known answers; shape checks on values; 14B-planner and plan-reuse configs ([design](design/step-7-trials-and-planners.md)) | `f3c959d` |
+| 7b | **Making it work on real pages.** Autocompletes, date pickers, positional values, readable run records, and evidence that can see what was entered ([notes](live-testing.md#what-live-testing-found)) | `8c2f502`–`6fd1006` |
 
 ## Where things stand
 
-Scripted benchmark with a fully hijacked executor, all defenses on: 7/7 tasks done, 1/7 harmful effects, 0/7 leaks, 0/7 false "done". An honest executor completes every task under every defense setup.
+**Scripted benchmark**, fully hijacked executor, all defenses on: 7/7 tasks done, 1/7 harmful effects, 0/7 leaks, 0/7 false "done". An honest executor completes every task under every defense setup.
 
-Live, with a local 7B model on a 16 GB Mac ([notes](live-testing.md)): lookups that start on the right page finish verified in under a minute (python.org, 42 s). After step 6, three repeated searches from Wikipedia's main page all found Mount Everest's elevation, with a median of 9 steps and 171 s. Before it, the same task took 27 to 35 steps or failed. The brief asks questions, but a 7B planner still under-asks.
+**Live**, local 7B on a 16 GB Mac ([numbers](live-testing.md#where-it-stands)): the three lookup tasks come back right and verified. Signing in to a practice site and reading a price is 3 of 3 right and verified, in a median of 14 steps and 63 s. A GitHub commits lookup is 3 of 3. Google Flights proves five of six sub-goals and doesn't finish.
 
 ## Known gaps
 
-- **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules, for example a rebooking date that must match a typed value from the task.
-- **Live models.** Measurements so far are a handful of runs per task on one local 7B model ([notes](live-testing.md)). A text value can be wrong while the run counts as verified (run 15), search steps are judged by a model, and Claude configs haven't been run live. The benchmark's live mode hasn't run either, so how often a real model falls for a planted instruction is still unmeasured.
-- **Interactive sites.** Choosing from an autocomplete works, but only through `select`, and a 7B executor reaches for `type` on those fields. Making `type` commit the suggestion was measured over nine runs and reverted: it cost the Everest task every run it had been winning, and still didn't get Google Flights to search ([notes](live-testing.md#making-type-commit-measured-then-reverted)). With dates supplied and evidence that can see fields, a run now proves three of five sub-goals on Google Flights and stops at the date format. Next: get the executor to pick `select` on a combobox, and enter dates the way a site writes them.
-- **Login.** Tasks start with a fresh browser profile, so no session carries over between runs. Signing in inside a run works, 3 of 3 on a practice site after the run-28 fixes, with the credentials granted as `{{placeholders}}` ([design](design/step-8-signed-in-tasks.md) for persistent profiles, not built).
+- **Driving a page.** A 7B executor picks the wrong verb and the wrong element when a page has more than one input: on Google Flights it spends forty steps moving between two city boxes. The browser layer can drive that site end to end when told what to do — the choice is the problem. *This is the next thing to work on.*
+- **Guessed text checks.** A planner-invented text check ("elevation of Mount Everest is", a phrase Wikipedia never shows) failed two runs on the right page. Sentence-like text checks next to a url check that already pins the page should be treated as guesses, the way guessed search URLs are.
+- **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules — a rebooking date that must match a typed value from the task.
+- **Live models, unmeasured.** Measurements are a handful of runs on one local 7B model. The benchmark's live mode hasn't run, so how often a real model falls for a planted instruction is still unknown. Claude configs have never been run live.
+- **Staying signed in.** Every task starts with a fresh browser profile, so no session carries over between runs. Signing in *inside* a run works. Persistent profiles are designed ([design](design/step-8-signed-in-tasks.md)) but not built.
 - **Dashboard.** The web dashboard asks the planner's questions, but doesn't accept mandates or notes, or show receipts.
 - **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.
 
 ## Next
 
-Based on live runs 14 to 21 ([notes](live-testing.md)). Each phase says what finishes it.
+### Phase A: make the executor choose well
 
-### Phase 1: make results measurable and trustworthy
+The last thing between web-lobster and a page it has to drive. Everything under it is already built.
 
-*Status:* items 1 to 4 are built (`f3c959d`); 6 to 10 followed from reading three harder tasks' failures ([notes](live-testing.md#reading-the-three-failures-and-fixing-what-they-showed-2026-09-19)). Item 5 is still open, and what's left of item 10 is really a new one: the executor picks the wrong verb and the wrong element on a page it has to drive.
+- **The right verb.** `select` commits a suggestion; `type` doesn't, deliberately ([why](live-testing.md#driving-a-real-widget)). A 7B executor reaches for `type` on a combobox. Change the choice, not the primitive.
+- **The right element.** On a page with several inputs sharing a label, it revisits the one it just filled. The observer already hides covered elements; what it doesn't do is tell the executor which one it used last.
+- *Done when* the Google Flights task runs its search, measured over repeated runs.
 
-1. **A repeat-run tool.** Run a task N times against a known answer and report the success rate, the correct-value rate, and median steps and time. Every later change is judged with it. *Done when* a live trial of a task is one command, and its report goes into the notes.
-2. **Shape checks on values.** A `pattern`, `min` and `max`, or an allowed list on requested values, enforced in code, so a misread like run 15's "3.15" can't come back as verified. *Done when* a value that fails its shape is rejected in a test and in a live rerun.
-3. **No goal-less sub-goals.** A planner reply whose sub-goals have no goal text is rejected or retried, instead of running as "Step 1" (run 19). *Done when* a parsing test covers it.
-4. **Evidence for search steps.** Every Everest run had its search step judged by a model, so none came back fully verified. Search-shaped steps should get a checkable outcome where the page allows one. *Done when* repeated Everest runs come back verified.
-5. **Guessed text checks.** In the trials, the 7B planner gave the article step a text check for "elevation of Mount Everest is", a phrase Wikipedia never shows, and two runs failed on the right page. Sentence-like text checks next to a url check that already pins the page should be treated as guesses, the way guessed search URLs are. *Done when* a parsing test covers it and repeated 7B Everest runs recover. **Still open.** A related case is closed: a text check for something typed into a field now passes, because the check reads field values too.
-6. **The caller's value checks win.** ~~When the planner declares a value with the same name as one the caller requested, the caller's `pattern`, `min`, and `max` are dropped; it happened in two of three python.org trials.~~ **Done.** The caller's spec replaces the planner's by name, and a requested value the plan never declares is read on the last step.
-7. **Values that mean "the first one".** ~~Asked for the newest commit on a GitHub commits page, both runs returned a real commit from the middle of the list, and both came back verified.~~ **Done.** A value can declare `pick: first` or `last`; the reader is asked to list every match in page order and code takes the end. The same task went from 0 of 3 right (verified and wrong) to **3 of 3 right and verified**.
-8. **A step that only reads can prove it read.** Such a step used to have no evidence and fall to a model verdict, so runs that read the right value came back unverified. **Done:** it gets a `{{$value}} was read` check.
-9. **Dates the way a site writes them.** ~~With dates supplied, the Tokyo task proved three of five sub-goals, then failed both date steps.~~ **Done.** A `type` that opens a dialog presses that dialog's own Done, and a text check matches a date however the site writes it. On Google Flights one `type` action now leaves `Thu, Oct 15` in the field and the plan's `2026-10-15` check passes.
-10. **The executor wanders.** ~~On the practice site it signed in, clicked around, logged itself back out, and retyped the credentials.~~ **Done.** A sub-goal ends the moment a check that was failing when it began passes. Sign-in went to 3 of 3 right and verified, from 40 steps to 15, and the known tasks came back verified 3 of 3. What's left of it is the executor's choice of verb and element: on Google Flights it spent forty steps moving between the two city boxes.
+### Phase B: close the safety gaps
 
-### Phase 2: a stronger planner
-
-*Status:* the 14B-planner, Claude-planner, and plan-reuse configs are built (`f3c959d`). In the first comparison, the 14B planner found Mount Everest 3 of 3 times, fully verified, against 1 of 3 for the 7B baseline. It doubled the time on lookups and read the python.org version right only 1 of 3 times, because the value reader is still the 7B model. Plan-reuse runs are in progress, and the Claude planner needs an API key ([learnings](learnings.md#7-a-stronger-planner-helps-multi-step-tasks-and-costs-time)).
-
-Compare, with the phase 1 tool and on the same tasks:
-
-- qwen2.5-coder:14b as the planner, with the 7B executor. It's already installed; the cost is Ollama swapping models between calls.
-- A Claude planner with a local executor and validator. It needs an API key and costs money.
-- Plans reused from memory: a plan that worked on a site, offered again for the next task there.
-
-Judge them by success rate, question quality (a 7B planner still under-asks, as in run 17), time, and cost. *Done when* one is the recommended setup, with the numbers behind it.
-
-### Phase 3: close the safety gaps
-
-- **Value-bound write rules.** The user's answers can bind what a write sends, such as the date of a rebooking. That closes `allowed-write-abuse`, measured with the benchmark.
+- **Value-bound write rules.** The user's answers bind what a write may send, closing `allowed-write-abuse`, measured with the benchmark.
 - **A live benchmark run.** How often real models fall for each trap, with and without the defenses.
 
-### Phase 4: real-world use
+### Phase C: real-world use
 
-- **Signed-in tasks.** Persistent browser profiles scoped to a mandate, and secrets from a password manager rather than environment variables. Designed in [design/step-8-signed-in-tasks.md](design/step-8-signed-in-tasks.md); not built.
+- **Signed-in tasks.** Persistent browser profiles scoped to a mandate, and secrets from a password manager rather than environment variables ([design](design/step-8-signed-in-tasks.md)).
 - **The dashboard.** Mandate entry, receipts, and a notes field.
 
-### Phase 5: speed
+### Phase D: speed
 
 - Shorter prompts for small models.
 - Skip the brief, or merge it with planning, when the task already says everything.
 
-Both are judged with the phase 1 tool, so speed never costs correctness unnoticed.
+Both judged with `web-lobster trials`, so speed never costs correctness unnoticed.
 
 ### What would change the order
 
-- The phase 1 tool shows the 7B planner falling short on more tasks: phase 2 comes first.
 - An API key becomes available: try a Claude planner early, to learn whether planning is the ceiling.
-- Signed-in tasks become the priority: phase 4's profiles move ahead of phase 3, design first.
+- Signed-in tasks become the priority: phase C's profiles move ahead of phase B, design first.
+- The executor turns out to be a prompt problem rather than a model one: phase A gets much cheaper, and phase B starts sooner.
+
+## Settled, with the evidence
+
+Things that looked like good ideas and were measured instead of assumed:
+
+| Idea | Verdict |
+|---|---|
+| Make `type` commit an autocomplete suggestion | **Reverted.** Cost Everest every run it had been winning (0 of 3 done), and bought nothing on Google Flights ([numbers](live-testing.md#driving-a-real-widget)) |
+| A 14B planner | **Not the default.** Fixed multi-step planning, doubled lookup time, didn't help value reading ([numbers](live-testing.md#one-comparison-worth-keeping-a-14b-planner)) |
+| Let a reading step prove itself with "the value was read" | **Kept, narrowed.** As first written it let a Tokyo run come back verified on an advert's price |
+| Trim the page so the reader sees less | **Doesn't work.** The reader takes the last match in whatever window it gets; trimming moves the wrong answer |

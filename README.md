@@ -18,9 +18,10 @@ It runs on local open-source models (tested on a 16 GB Mac) or on Claude. Use it
 | **[Mandates](#mandates)** | Sites, data grants, write rules and expiry, enforced in the browser's network layer, including every redirect hop | A hijacked model still can't leave the approved sites, leak your data, or make writes you didn't allow |
 | **[Planner isolation](#planner-isolation-and-typed-values)** | The planner never sees page content. Pages reach it only as type-checked values | Prompt injection can't rewrite the plan |
 | **[Thinks before acting](#thinking-before-acting)** | A brief before the browser opens: goal, assumptions, questions for you, mandate gaps. Code reviews the plan, and the planner fixes what it finds | No guessing at dates or choices only you can make, and fewer runs doomed from the first step |
-| **[Evidence and receipts](#evidence-and-receipts)** | URL, request, text and value checks run in code; SHA-256 chained receipts for every step | A page saying "Order placed!" isn't proof, and you get an audit trail you can verify |
+| **[Evidence and receipts](#evidence-and-receipts)** | URL, request, text and value checks run in code; SHA-256 chained receipts for every step, and a trail of every action the run took | A page saying "Order placed!" isn't proof, and you get an audit trail you can verify |
 | **[Poisoned-page benchmark](#poisoned-page-benchmark)** | Seven trap sites, scored from what their servers actually received | The defenses are measured, not asserted |
 | **[MCP server](#use-it-from-other-agents-mcp)** | `web_task`, `brief_task`, `check_mandate`, `get_run`, `verify_receipts`, plus an OpenClaw and Claude Code plugin | Other agents get web results without reading untrusted pages themselves |
+| **[Trials](#measuring-it)** | Live tasks with known answers, run again and again and scored in code | A change is judged by a success rate, not by one lucky run |
 | **[Local models](#quick-start)** | One 7B model on a 16 GB Mac, reading pages as text | Free, private, and [tested on live sites](#using-it-for-real) |
 
 In the benchmark, a fully hijacked executor with no defenses causes harm in 6 of 7 scenarios, leaks the user's email in 3, and falsely claims success in 2. With every defense on, that drops to 1, 0 and 0, and an honest executor still completes all seven tasks.
@@ -103,12 +104,14 @@ For a text-only model, set `vision: false` on its role so it's never sent screen
 
 These are real tasks on live sites with the local 16 GB config, where qwen2.5-coder:7b plays every role. The MCP runs used a read-only mandate for the one site involved.
 
-| Task | Run through | Result | Steps | Time |
-|---|---|---|---|---|
-| How tall is the Eiffel Tower? (Wikipedia) | CLI | Right answer (330 m), verified by evidence | 0 | 21 s |
-| Eiffel Tower height as a `number` value | MCP | Right value (330), verified by evidence | 1 | 60 s |
-| Latest Python 3 release on python.org, as a `text` value | MCP over stdio | Right value (3.14.7), verified by evidence | 0 | 42 s |
-| Mount Everest's elevation, from Wikipedia's main page through its search box, as a `number` | MCP over stdio | Right value (8,848.86 m) in 3 of 3 repeated runs; the search step is judged by the model | 9 (median) | 171 s (median) |
+| Task | Result | Steps | Time |
+|---|---|---|---|
+| How tall is the Eiffel Tower? (Wikipedia) | Right (330 m), verified by evidence | 0 | 45 s |
+| Latest Python 3 release on python.org, as a `text` value | Right (3.14.7), verified | 3 | 108 s |
+| Mount Everest's elevation, from Wikipedia's main page through its search box, as a `number` | Right (8,848.86 m), verified | 8 | 134 s |
+| Sign in to a practice shop and read a product price, credentials as `{{placeholders}}` | Right (29.99), verified, 3 of 3 runs | 14 | 63 s |
+| The newest commit on a GitHub commits page, as a positional value | Right, verified, 3 of 3 runs | 2 | 95 s |
+| Cheapest New York → Tokyo flight on Google Flights | **Unfinished.** Five of six sub-goals proven, including both cities and both dates; it never runs the search | 40 | 537 s |
 
 Getting good results:
 
@@ -120,10 +123,9 @@ Getting good results:
 
 What doesn't work yet:
 
-- **Staying signed in.** Every task starts with a fresh browser profile, so a session never carries over. Signing in during a task works: a mandate grants a username and password as `{{placeholders}}` the model never sees, neither ever appears in a run record, and on a practice site it is 3 of 3 right and verified, in a median of 15 steps. Persistent profiles are designed ([docs/design/step-8-signed-in-tasks.md](docs/design/step-8-signed-in-tasks.md)) but not built.
-- **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops URL checks that spell out query strings and separate "extract" steps. It counts an "open the page" step as done when the browser is already provably there, and when a step fails after carrying the browser to a later step's page, it skips ahead instead of replanning. In three repeated Everest runs after that, all three found the right answer, two of them in under three minutes. Other multi-page flows and forms have only been tried once each on local models, so treat them as hit or miss. `configs/claude.yaml` gives the planner far more to work with, but it hasn't been run against live sites yet.
-- **Pages you have to drive**, like a flight search. Choosing from an autocomplete works, but only through `select`, and a 7B executor reaches for `type` on those fields. Making `type` commit the suggestion was measured over nine runs and reverted: it broke the searches that were working and fixed nothing ([notes](docs/live-testing.md#making-type-commit-measured-then-reverted)).
-- **Pages you have to drive, still.** Dates and dropdowns now commit — a `type` that opens a dialog presses its Done, and a date matches however the site writes it — but on Google Flights a 7B executor still spends its budget moving between the two city boxes. It picks the wrong verb and the wrong element, which no amount of browser-layer work fixes.
+- **Pages you have to drive**, like a flight search. The browser layer handles the widgets: a real `<select>`, an autocomplete that only counts once a suggestion is chosen, a date box that keeps nothing until its picker's Done is pressed. What doesn't work is the *choice* — a 7B executor reaches for `type` where only `select` commits, and goes back to the box it just filled. That's where the Google Flights task stops. Making `type` commit everything was measured over nine runs and reverted: it broke the searches that were already working ([notes](docs/live-testing.md#driving-a-real-widget)).
+- **Staying signed in.** Every task starts with a fresh browser profile, so no session carries over between runs. Signing in *inside* a run works — a mandate grants a username and password as `{{placeholders}}` the model never sees, and neither ever appears in a run record. Persistent profiles are designed ([docs/design/step-8-signed-in-tasks.md](docs/design/step-8-signed-in-tasks.md)) but not built.
+- **Long flows on local models.** A 7B planner still tends to plan click by click and guess URLs. web-lobster drops url checks that spell out query strings, folds "extract" and click-level steps into the outcomes they belong to, counts an "open the page" step as done when the browser is provably there already, and skips ahead when a failed step reached a later step's page. That took Everest from failing most runs to 3 of 3. Flows longer than that have been tried a handful of times each, so treat them as hit or miss. `configs/claude.yaml` gives the planner far more to work with, but has never been run against live sites.
 - **Pages that only make sense as images** (charts, canvas apps) on the text-only local config. Use a vision model for the executor and validator there.
 
 Mandate block counts include each page's own analytics and error reporting. MCP results flag those as `background`, and the agent is only told about blocks its own actions could have caused.
@@ -160,11 +162,13 @@ Every task runs under every config you pass. The report shows how often each was
 Building web-lobster and running it against real sites taught us more than the tests did. The full account, with the evidence behind each lesson, is in [docs/learnings.md](docs/learnings.md). The headlines:
 
 - **Enforce, don't detect.** With a fully hijacked executor, harm fell from 6 of 7 scenarios to 1 and leaks from 3 to 0 once the browser enforced mandates, while an honest executor still finished every task. Each layer catches something different: mandates stop leaks, write rules stop same-site damage, and evidence stops false "done".
-- **Live runs find what tests don't.** Sixteen problems surfaced only on real sites or real models, from a model rejecting screenshots to a local config quietly switching to paid Claude models.
+- **Live runs find what tests don't.** Twenty-five problems surfaced only on real sites or real models — a model rejecting screenshots, a config quietly switching to paid Claude models, a url check passing on a 404, an agent signing in and then clicking itself back out.
 - **"Verified" means exactly what was checked.** Runs proved every step and still returned 300 m for a 330 m tower, and "3.15" for Python 3.14.7. Values now carry shape checks enforced in code, and a run that can't read a requested value isn't verified.
 - **On small models, prompts don't stick; code does.** A 7B planner ignored instructions about guessed URLs, extract steps, and click-by-click plans. Normalizing its plans in code took Mount Everest from failing most runs to 3 of 3, in a median of 9 steps.
 - **One run is an anecdote.** The same task and code swung from 3 of 3 to 1 of 3 in a day, and python.org took anywhere from 85 to 277 seconds. `web-lobster trials` exists because of it.
 - **A stronger planner helps multi-step tasks, and costs time.** A 14B planner found Everest 3 of 3 times, fully verified, against 1 of 3 for the 7B baseline, but doubled the time on simple lookups and didn't help a weaker model read values.
+- **Give a small model the job it can do, and keep the rest in code.** Asked for the *newest* commit on a page of commits, a 7B reader returned the last one in the text every time, at every window size. Asked to *list* them in page order, it got the order right — so it lists, and code takes the first.
+- **A new check can create the failure it was meant to close.** Letting a reading step prove itself stopped honest runs coming back unverified, and two days later let a run come back *verified* on a price from an advert. Both directions need a live run before they're believed.
 - **The planner stays blind to pages, even with more context.** Every new planner input passes one test: has it ever been near a page?
 
 ## More features
@@ -271,15 +275,15 @@ A vision model saying "done" is an opinion, and a page can simply display "Succe
 | Check | Passes when |
 |---|---|
 | `request` | During the sub-goal, the browser sent a matching request that was answered 2xx or 3xx (`status_min`/`status_max` change the range) |
-| `url` | The page ended up at a matching URL. The host follows mandate origin rules, so a pattern can't match a lookalike host |
-| `text` | The page's full text contains the phrase, ignoring case and whitespace |
-| `value` | A typed value read on this or an earlier sub-goal compares as stated |
+| `url` | The page ended up at a matching URL **and the page itself wasn't an error**. The host follows mandate origin rules, so a pattern can't match a lookalike host |
+| `text` | The page's text contains the phrase, or one of its fields holds it — a value typed into a box is not page text. A date matches however the site writes it: `2026-10-15` is proven by `Thu, Oct 15` |
+| `value` | A typed value read on this or an earlier sub-goal compares as stated. With a null value it asks only whether the value was read and passed its shape checks, which is what a step that only reads can prove |
 
 Evidence is re-checked while the browser still has requests in flight (up to `agent.evidence_wait_seconds`, 5 seconds by default), so a redirect that's still landing isn't mistaken for a failure. When checks fail, the executor is told what's still missing and keeps working. A sub-goal without evidence falls back to the validator model, and its receipt says it was judged by a model, not verified.
 
 Every finished sub-goal gets a receipt: whether it counted as done and on what basis, each check's result, the page it ended on, and the write requests the browser actually sent (method, URL and status, never bodies). Each receipt's SHA-256 digest covers the previous one, so editing or dropping a receipt breaks the chain. That proves something only if you keep the last digest somewhere the agent can't rewrite. Receipts appear in the run summary, `--receipts run.jsonl` writes them out, and `verify_chain` in `web_lobster/verify/receipts.py` checks a file.
 
-Limits: a `text` check only proves what the page displays, so pair it with `url` or `request`. A `request` check can't see response bodies, so it proves the site accepted a write, not what was written. Evidence is only as good as the planner's idea of what success looks like, though a wrong pattern fails safe: the sub-goal isn't marked done. Confirmation emails aren't checked yet.
+Limits: a `text` check only proves what the page displays or holds, so pair it with `url` or `request`. A step that has to *do* something is never proven by having read a value — a Tokyo run came back verified on a price from an advert before that rule was narrowed. A `request` check can't see response bodies, so it proves the site accepted a write, not what was written. Evidence is only as good as the planner's idea of what success looks like, though a wrong pattern fails safe: the sub-goal isn't marked done. Confirmation emails aren't checked yet.
 
 ## Poisoned-page benchmark
 
@@ -402,7 +406,7 @@ web_lobster/
 configs/                     # Model configs: local-16gb, claude, default, and more
 trials/                      # Live tasks with known answers, for web-lobster trials
 integrations/                # OpenClaw and Claude Code plugin bundle
-docs/                        # MCP server guide, roadmap, design records
+docs/                        # Architecture, roadmap, learnings, live-testing notes, design records (start at docs/README.md)
 examples/                    # Example scripts and a mandate
 tests/                       # Unit tests plus real-browser mandate, evidence, and MCP tests
 ```

@@ -1,311 +1,201 @@
 # Live testing
 
-Until step 5, every result came from scripted models. This round ran real tasks on live sites with a local model, to find what breaks when web-lobster is used for real, and fixed what it found.
+Everything through step 4 was measured with scripted models on local trap sites. This is the other half: real tasks, on live sites, driven by a local 7B model — and the bugs that only appear there.
+
+Every run is recorded, failures included. Where a run changed the code, the change is named. Lessons drawn from all of it are in [learnings.md](learnings.md); what's still open is in [roadmap.md](roadmap.md).
+
+## Where it stands
+
+The latest measured run of each task, fresh memory, `configs/local-16gb.yaml` (qwen2.5-coder:7b for every role) on an M4 with 16 GB. The three lookups are a one-run regression check; the rest are three runs each, except Google Flights at two:
+
+| Task | Done | Right | Verified | Median steps | Median time |
+|---|---|---|---|---|---|
+| Eiffel Tower height, starting on the article | 1/1 | 1/1 | 1/1 | 0 | 45 s |
+| Latest Python 3 release, starting on the downloads page | 1/1 | 1/1 | 1/1 | 3 | 108 s |
+| Mount Everest's elevation, from Wikipedia's main page through its search box | 1/1 | 1/1 | 1/1 | 8 | 134 s |
+| Sign in to a practice site and read a product price | 3/3 | 3/3 | 3/3 | 14 | 63 s |
+| Newest commit on a GitHub commits page | 3/3 | 3/3 | 3/3 | 2 | 95 s |
+| Cheapest New York → Tokyo flight on Google Flights | 0/2 | — | 0/2 | 40 | 537 s |
+
+Google Flights is the one that doesn't finish. It proves five of its six sub-goals — both cities and both dates, all by code — and then spends its remaining steps moving between the two city boxes instead of running the search. That last step is the executor choosing the wrong verb on the wrong element, which no browser-layer fix reaches.
 
 ## Setup
 
-- **Machine:** Apple M4 with 16 GB of memory, models served by Ollama.
-- **Model:** qwen2.5-coder:7b as planner, executor, and validator ([`configs/local-16gb.yaml`](../configs/local-16gb.yaml)): text only, DOM mode, 16k context. gemma3:12b, a vision model, was also tried for reading values: it was slower and no more accurate.
-- **Paths:**
-  - `web-lobster run` on the CLI.
-  - `web_task` in-process, through the MCP SDK's in-memory client.
-  - `web-lobster mcp` over stdio as a subprocess, the way OpenClaw and Claude Code launch it.
-- **Mandates:** read-only, one origin per task. Nothing was submitted, bought, or sent.
+- **Machine:** Apple M4, 16 GB, models served by Ollama.
+- **Model:** qwen2.5-coder:7b as planner, executor, and validator ([`configs/local-16gb.yaml`](../configs/local-16gb.yaml)) — text only, DOM mode, 16k context. gemma3:12b, a vision model, was tried for reading values: slower, no more accurate.
+- **Paths exercised:** `web-lobster run` on the CLI; `web_task` in-process through the MCP SDK's in-memory client; `web-lobster mcp` over stdio as a subprocess, the way OpenClaw and Claude Code launch it; and `web-lobster trials` for anything measured.
+- **Mandates:** read-only, one origin per task. Nothing has been submitted, bought, or sent. The one signed-in task uses a practice site whose credentials are published on its own front page.
 
-## Runs
+## Reproduce
 
-In order. Fixes landed between runs, so each run shows the code as it stood then.
+```bash
+ollama pull qwen2.5-coder:7b
+web-lobster run -c configs/local-16gb.yaml -u https://en.wikipedia.org/wiki/Eiffel_Tower "How tall is the Eiffel Tower?"
+```
+
+Measured, rather than once:
+
+```bash
+web-lobster trials trials/web.yaml -c configs/local-16gb.yaml -n 3
+```
+
+Over MCP, start `web-lobster mcp -c configs/local-16gb.yaml` from your client and call `web_task`:
+
+```json
+{"task": "Find the version number of the latest Python 3 release on python.org.",
+ "mandate": {"origins": ["https://www.python.org"], "expires_in_minutes": 20},
+ "start_url": "https://www.python.org/downloads/",
+ "values": [{"name": "latest_version", "type": "text", "description": "the latest Python 3 release version"}],
+ "include_page_text": true}
+```
+
+## What live testing found
+
+Grouped by what broke, not by the day it broke. Run numbers point into [the run log](#the-runs).
+
+### Reading a page
+
+| What happened | Why | What changed |
+|---|---|---|
+| A verified run said the Eiffel Tower is 300 m (run 3) | Values were read from the first 3,000 characters, which ended inside the site's menus | Values and the final answer come from the page's `main`, `[role=main]` or `article` text, up to 12,000 characters, redacted before truncation |
+| A verified run gave no answer at all (run 12) | Answer extraction only ran after a page observation, and that run finished before observing one | The answer is read from the live page either way, with the URL redacted under a mandate |
+| "3.15" came back as the latest Python release (run 15) | The reader took a pre-release row; nothing in code could tell it was wrong | Values carry shape checks — `pattern`, `min`, `max` — enforced in code. A value that fails counts as not read |
+| Asked for the **newest** commit on a page of commits, the reader returned one from the middle — identically, three times at temperature 0 (run 29) | It returns the **last** match in whatever text it is given. Trimming the page only moved the wrong answer: at 3,875 characters it picked the one at 3,609; at 1,200 the one at ~1,150; at 600 the one at ~560. The right answer sat at 245 every time | A value can declare `pick: first` or `last`. The reader is asked to **list** every match in page order — which the same model does correctly — and code takes the end. 0 of 3 right became 3 of 3 right and verified |
+| The caller's `pattern` was silently dropped in two of three python.org runs, and `pick` was ignored entirely | The planner is told which values the caller wants and writes its own specs for them, in its own words | The caller's spec replaces the planner's by name, and a requested value the plan never declares is read on the last step |
+
+### Plans a small model writes
+
+| What happened | Why | What changed |
+|---|---|---|
+| A sub-goal could never be proven (run 5) | The planner invented a search-results URL as evidence, and Wikipedia redirects searches straight to the article | URL checks that spell out a query string are dropped as guesses |
+| "Extract the version number" sent the executor clicking away from the answer (run 6) | A read-only step with no evidence became a step to act on | Read-only sub-goals with no evidence fold into the step before, taking their values with them |
+| Click-by-click plans stalled: "Click the search button" failed its own check once the search had already landed (runs 9, 16) | A click-level step's check stops being true the moment the page moves on | Click-level steps fold into the outcome they lead to. A failed step that carried the browser to a later step's page skips ahead instead of replanning |
+| A replan produced sub-goals named "Step 1" and "Step 2" (run 19) | The planner returned sub-goals with no goal text | Goal text is also read from `description`, `sub_goal`, `task`, `name`, `title`, `objective`, `action` and `step`; a reply with none is an error |
+| Steps planned to open a page the browser was already on | Nothing checked | Such a step counts as done before any action when its url check already passes — never with a request check |
+
+A 7B planner still under-asks in the brief: it will assume a departure date rather than ask for one (runs 14, 17). The question rules and plan review push back; they don't fix it.
+
+### Proving a step
+
+| What happened | Why | What changed |
+|---|---|---|
+| Every Everest run had its search step judged by a model | A search step had no checkable outcome | A search step with a quoted term gets a text check for that term |
+| A url check passed on a **404** (run 28) | A guessed URL that doesn't exist still puts the browser at the address the check asked for | The browser records the status its own document answered; a url check fails on an error page. An unknown status still passes |
+| "Prove I entered New York" could never pass (run 27) | A value typed into a field is not page text — `inner_text` skips it | A text check also passes when a field on the page holds the text, read live at check time |
+| A date check could never pass either | The site redisplays `2026-10-15` as `Thu, Oct 15` | A text check matches a date however a site writes it: `Oct 15`, `October 15`, `15 Oct`, `15 October`, `10/15/2026`, `15/10/2026`. A different day still fails |
+| Runs that read the right value came back unverified (run 28) | A step whose only job is reading had no evidence, so a model judged it | Such a step gets a `{{$value}} was read` check |
+| **Then a Tokyo run came back "done, verified" on a price from an advert** | That new check was given to *any* sub-goal with values and no evidence — including one whose job was to run a search. Reading any number satisfied it | The check is only for a step whose whole job is reading (read, find, get, locate, look up, check, extract, note, record, report, identify, determine, retrieve, copy, write down — and no mention of changing anything). A step that has to act first goes back to a model verdict, which is weaker and says so |
+
+### Driving a real widget
+
+Google Flights is where this was learned, and the same shape appears one layer at a time.
+
+| What happened | Why | What changed |
+|---|---|---|
+| `select` raised an error on every city box, burning the whole step budget (run 23) | They are `role="combobox"` widgets, not `<select>` elements, and Playwright's `select_option` only works on a real `<select>` | `select` uses the browser's picker on a real `<select>`, and otherwise types, takes the suggestion, and falls back to Enter |
+| Typing "Tokyo" produced "TokTokyoyo" | The field completes inline as you type, racing the keystrokes | A field that completes inline gets the whole value in one insertion. Granted values go in the same way, so a secret can't leak as prefixes |
+| Both cities were entered three times with no effect | The page renders several identical inputs; only one is live | The observer skips elements covered by something else, keeping them when the check can't tell |
+| Cities were typed and the search ran with neither (run 25) | These widgets commit only when a suggestion is chosen, and the executor reaches for `type`, which doesn't commit | See below — making `type` commit was measured and reverted |
+| Both dates were typed and the search ran with neither | Same shape, one layer along: a date box keeps nothing until its picker's **Done** is pressed | A `type` that opens a dialog presses that dialog's own confirm control. Only a dialog that wasn't open before the typing — checked live, neither Wikipedia's search box nor python.org's opens one |
+
+**Making `type` commit a suggestion: measured, then reverted.** It looked like the fix for the city boxes. Nine trial runs said otherwise:
+
+| Task | Before | With typing that commits |
+|---|---|---|
+| eiffel | right + verified | 3/3 right + verified, 36 s |
+| python-latest | right + verified | 3/3 right, 1/3 verified, 85 s |
+| everest | right + verified, 5 steps | **0/3 done**, 0/3 verified, 25 steps, 440 s |
+
+Wikipedia's search box becomes a `role="combobox"` the moment the controller clicks it and clears it, so every search turned into a click on Wikipedia's first guess; two runs ended on its search page with an **empty** query. The Tokyo run it was aimed at took no suggestions at all. Committing stays on `select`, and the tests pin both sides.
+
+### Knowing what a run did
+
+Two of the hardest failures were unreadable from their outcomes.
+
+- **A sign-in that went nowhere** turned out to be one line: `navigate .../login.html`, then thirty-five rejections of `element_id 1 not on page (valid: [])`. The planner had guessed a URL that doesn't exist. The server 404s, its single-page-app fallback redirects to a 200 and rewrites the address back, so the browser sat at exactly the URL the check asked for with nothing rendered.
+- **A run that signed in and then failed the sign-in step** was the agent clicking on into the menu and logging itself back out.
+
+Run records now keep the executor's action trail, redacted — every action, and every blocked or refused one, one line each. An observation with no elements and no text also ends the attempt after one step back, instead of spending the budget choosing elements that aren't there.
+
+### Noise
+
+| What happened | Why | What changed |
+|---|---|---|
+| The executor was told about 11 blocked analytics beacons and got confused (run 2); python.org's error reporting retried a blocked POST 427 times (run 6) | Every block was reported | Everything is still blocked and recorded. The executor hears only about blocks its own action could have caused |
+| Half the executor's history was mandate blocks — 49 of 95 entries, `jserror` 22 times (run 27) | A single-page app fires same-origin telemetry on every step, and those look like an app's own submit | Each blocked endpoint is reported to the executor once per run. After: 4 of 50 |
+| MCP results listed hundreds of identical blocks | — | Blocks are grouped by kind and site with counts, and page-script traffic is flagged `background` |
+| Five of forty steps were `type` actions with no text | Nothing checked | A `type` or `select` with nothing to enter is refused before it runs |
+| `httpx` logged every model call into the host's server log | — | Quieted to warnings unless `-v` |
+
+### Two that weren't about the web at all
+
+- **`-c configs/local-16gb.yaml` silently switched to Claude** once `ANTHROPIC_API_KEY` was set. A config passed with `-c` is now used as written.
+- **qwen2.5-coder:7b rejects images with HTTP 400.** `vision: false` per role, and the Ollama backend retries once without images and remembers the model is text only. Ollama's default context also cut pages short, hence `context_window`.
+
+## What the fixes do to the guarantees
+
+- **The mandate is unchanged.** Every request blocked before is still blocked and recorded. Only what the executor is *told* changed.
+- **Dropping a guessed url check weakens that sub-goal's proof.** It falls back to the validator model, and its receipt says so. That trades verification for finishing, and only for checks that were guesses.
+- **Counting a step done early, skipping ahead, and stopping when a goal is proven all rest on checks evaluated against the live browser** — the same proof evidence uses. None of them passes over a required write.
+- **Widening a text check to fields and date renderings** widens what counts as the same fact, not how strongly a page's claim counts. A text check was already the weakest evidence there is.
+
+## The runs
+
+In order. Fixes landed between runs, so each shows the code as it stood then.
+
+### Step 5b: first contact with live sites (runs 1–13)
 
 | # | Task | Path | Outcome | Steps | Time | What it showed |
 |---|---|---|---|---|---|---|
-| 1 | Eiffel Tower height on Wikipedia | CLI, no mandate | Done; right answer (330 m), judged by the model | 14 | 250 s | The loop works on a 7B model |
-| 2 | Same, as a `number` value | MCP in-process | Done, not verified; 330 | 18 | 298 s | The mandate blocked 11 analytics beacons and reported each to the executor, which got confused. The planner didn't know the browser started on the article |
-| 3 | Same | MCP in-process | Verified, **wrong value (300)** | 1 | 37 s | Values were read from the first 3,000 characters, which ended in the site's menus |
+| 1 | Eiffel Tower height on Wikipedia | CLI | Done; 330 m, judged by the model | 14 | 250 s | The loop works on a 7B model |
+| 2 | Same, as a `number` value | MCP in-process | Done, not verified; 330 | 18 | 298 s | 11 analytics beacons blocked and each reported to the executor. The planner didn't know where the browser started |
+| 3 | Same | MCP in-process | Verified, **wrong (300)** | 1 | 37 s | Values read from the site's menus |
 | 4 | Same | MCP in-process | Verified; 330 | 1 | 60 s | Reading the main content fixed it |
-| 5 | Mount Everest's elevation via Wikipedia's search box | MCP stdio | Failed | 40 | 359 s | The stdio path works end to end. The planner set a guessed search URL (`/w/index.php?search=...`) as evidence, and Wikipedia never shows it: searches redirect to the article |
-| 6 | Latest Python 3 release on python.org, as a `text` value | MCP in-process | Done, not verified; 3.14.7 | 19 | 329 s | python.org's error reporting retried a blocked POST 427 times, flooding the logs and the executor's history. The plan ended with "Extract the version number", which sent the executor clicking away from the answer |
-| 7 | Everest again, with a stricter planner prompt | MCP stdio | Stopped by hand, stuck in the same loop | 16 | — | Prompting alone doesn't stop a 7B planner from writing click-by-click plans and guessing URLs |
-| 8 | python.org again | MCP stdio | Done; 3.14.7, 1 of 2 steps verified | 8 | 195 s | After the noise fix, 122 blocks were all flagged as page-script traffic, with 2 warning lines in the log |
-| 9 | Everest again, with plan tidying and "already there" | MCP stdio | Failed | 40 | 517 s | Sub-goal 1 was done at 18 s without acting. The plan still split the search into "type", "click search", and "click the article". Once typing and searching landed on the article, the typing step failed its own check, and the run never recovered. This is what skip-ahead fixes |
-| 10 | python.org again | MCP stdio | Verified; 3.14.7 | 0 | 42 s | The browser started on the answer page, so the one sub-goal was proven before any action and the value read straight off the page |
-| 11 | Everest again, with skip-ahead | MCP stdio | Done; 8,848.86 m, 3 of 4 steps verified | 35 | 478 s | The full search from the main page finished with the right value, checked as a number. The plan was still click by click ("type", "click search", "click the article"), and the last two steps took 30 steps between them. No step failed, so skip-ahead never had to fire |
-| 12 | Eiffel Tower height, the README's CLI example | CLI, no mandate | Done, verified, but **no answer** | 0 | 7 s | The browser started on the article, so the one sub-goal was proven before any action. Answer extraction only ran after a page observation, and this run never made one |
-| 13 | Same | CLI, no mandate | Done, verified; "The Eiffel Tower is 330 meters (1,083 feet) tall." | 0 | 21 s | Fixed: the answer is read from the live page whether or not the run observed one. Run 1 took 14 steps and 250 s |
+| 5 | Everest via Wikipedia's search box | MCP stdio | Failed | 40 | 359 s | The stdio path works. A guessed search URL as evidence made the sub-goal impossible |
+| 6 | Latest Python 3 release | MCP in-process | Done, not verified; 3.14.7 | 19 | 329 s | 427 blocked retries flooded the executor. "Extract the version number" sent it away from the answer |
+| 7 | Everest, stricter planner prompt | MCP stdio | Stopped by hand | 16 | — | Prompting alone doesn't stop click-by-click plans or guessed URLs |
+| 8 | python.org again | MCP stdio | Done; 3.14.7, 1 of 2 verified | 8 | 195 s | 122 blocks, all flagged as page-script traffic, 2 log lines |
+| 9 | Everest, with plan tidying | MCP stdio | Failed | 40 | 517 s | The typing step failed its own check once the search had landed. This is what skip-ahead fixes |
+| 10 | python.org again | MCP stdio | Verified; 3.14.7 | 0 | 42 s | Proven before any action, value read off the page |
+| 11 | Everest, with skip-ahead | MCP stdio | Done; 8,848.86 m, 3 of 4 verified | 35 | 478 s | Finished, still click by click; no step failed, so skip-ahead never fired |
+| 12 | Eiffel, the README's example | CLI | Done, verified, **no answer** | 0 | 7 s | Answer extraction only ran after an observation |
+| 13 | Same | CLI | Done, verified; "330 meters (1,083 feet)" | 0 | 21 s | Fixed. Run 1 took 14 steps and 250 s |
 
-The tower's height (330 m) and the Python release (3.14.7) were checked against the live pages. 8,848.86 m is Everest's official height from the 2020 China–Nepal survey.
-
-## What was fixed
-
-| Problem | Fix | Where |
-|---|---|---|
-| qwen2.5-coder:7b rejects images with HTTP 400 | `vision: false` per role. The Ollama backend also retries once without images and remembers the model is text only | `core/config.py`, `models/ollama_backend.py` |
-| Ollama's default context cut pages short | `context_window`, sent as `num_ctx` | same |
-| Values read from the site's menus | Values and the final answer come from the page's `main`, `[role=main]`, or `article` text, up to 12,000 characters, redacted before truncation | `browser/controller.py`, `core/orchestrator.py`, `models/extractor.py` |
-| Planner planned steps to reach the start page | The planner is told where the browser starts: origin and path only, since query strings can carry tokens | `models/planner.py` |
-| Guessed search-result URLs made sub-goals impossible | URL checks that spell out a query string are dropped | `tidy_sub_goals` in `models/planner.py` |
-| "Extract the ..." steps sent the executor away from the answer | Read-only sub-goals with no evidence are dropped, and their values move to the step before | same |
-| A replanned goal was named "Step 1" | Goal text is also read from `description`, `sub_goal`, `task`, and `name` | same |
-| "Open the page" steps when the browser was already there | Such a step counts as done before any action when its url check already passes. Only for goals that open a page, and never with a request check | `_already_there` in `core/orchestrator.py` |
-| A step like "Type the query" fails once the search lands on the result | When a failed step took the browser to a page that proves a later sub-goal (its url check passes now but didn't where the failed step began), the steps in between are skipped and the later one is completed on that proof. Never past a step with a request check, because skipped steps count toward completion | `_skip_to_later_goal` in `core/orchestrator.py` |
-| Analytics and error reporting flooded the executor | Still blocked and recorded. The executor hears only about page loads, form posts, script writes back to the same site, data leaks, and expiry, with repeats collapsed | `worth_reporting` in `mandate/enforcer.py` |
-| MCP results listed hundreds of identical blocks | Blocks are grouped by kind and site with counts, and page-script traffic is flagged `background` | `blocked_actions` in `mcp_server/service.py` |
-| `-c configs/local-16gb.yaml` would silently switch to Claude once `ANTHROPIC_API_KEY` was set | A config passed with `-c` is used as written | `__main__.py`, `ui/server.py` |
-| A run finished before any action gave no answer | The answer is read from the live page, with the URL redacted under a mandate, whether or not a page was observed | `_extract_answer` in `core/orchestrator.py` |
-| httpx logged every model call into the host's server log | Quieted to warnings unless `-v` | `__main__.py` |
-
-What these fixes do to the guarantees:
-
-- **The mandate is unchanged.** Every request it blocked before is still blocked and recorded. Only what the executor is told changed.
-- **Dropping a guessed URL check weakens that sub-goal's proof.** It falls back to the validator model, and its receipt says so. This trades verification for finishing, and only for checks that were guesses.
-- **Counting a step done early and skipping ahead both rest on a url check** that passes against the live browser, the same proof evidence uses. Neither ever passes over a required write.
-
-## Still weak
-
-- A 7B planner still writes click-by-click plans. Tidying and skipping ahead recover some of them, not all.
-- A step takes 5 to 15 seconds on this machine. Lookups that start on the right page finish in under a minute, but the Everest search from the main page took 8.
-- These runs show a local model completing honest tasks, not how often it falls for planted instructions. The benchmark's live mode hasn't run yet.
-- Claude configs weren't run live in this round.
-
-## Thinking before acting (step 6)
-
-The same machine and model, after [step 6](design/step-6-planner-briefing.md) added a brief, questions, and plan review before the browser opens. All runs over MCP stdio.
+### Step 6: thinking before acting (runs 14–21)
 
 | # | Task | Tool | Outcome | Steps | Time | What it showed |
 |---|---|---|---|---|---|---|
-| 14 | "Find me a cheap round-trip flight to Tokyo", read-only mandate on google.com | `brief_task` | A brief with a sensible goal and assumptions, and **no questions** | — | 15 s | The planner assumed "current date as departure" rather than asking for dates or where the trip starts. A 7B planner under-asks: the prompt's "prefer a sensible assumption" won out over "ask what you can't sensibly assume" |
-| 15 | Latest Python 3 release on python.org, read-only mandate | `brief_task`, then `web_task` with `brief_id` | Done and verified, but **the value was "3.15"** | 0 | 70 s, plus about 11 s for the brief | The brief rightly asked nothing and was reused without rethinking. Evidence proved the downloads page was open, but the extractor read the "3.15 pre-release" row of the active-releases table instead of the 3.14.7 download (runs 8, 10, and 13 read 3.14.7). "Verified" covers the steps, not whether a text value is right. The run was also 28 s slower than run 10, from longer prompts |
-| 16 | Mount Everest's elevation from Wikipedia's main page | `web_task` | Failed | 40 | 487 s | The brief rightly asked nothing, but the plan was still four click-level steps: open the search box, type, click search, open the article. Plan review had nothing to flag, since four steps is under its limit. "Click the search button" failed its own check three times, and the article step never reached the article. Run 11 had the same plan shape and finished, so a single run is anecdote, not measurement. This run led to plan review flagging click-level steps |
-| 17 | Run 14's Tokyo task again, after the question rules changed | `brief_task` | Two questions, departure and return date, each with a default (today, and a week later) | — | 17 s | Half fixed. It now asks for the dates instead of assuming them, and nothing blocks because both have defaults. It still never asked where the trip starts, even though the prompt names that case; it didn't assume a city, it just didn't think of one. A 7B planner follows a checklist unevenly |
-| 18 | Everest again, with plan review flagging click-level steps | `web_task` | Done; 8,848.86 m, 3 of 4 steps verified | 27 | 442 s | Plan review made the planner rewrite its plan once (planning took 66 s, against 31 s in run 16), merging "open the search box" and "type" into one step. The rewrite still kept "Click the search button" and a separate "Extract the elevation" step, and code accepted it because it had no more issues than the original. This is the fastest Everest finish so far, but runs 11 and 16 had near-identical plans and went opposite ways, so one run per setup can't show the check caused it |
-| 19 | Everest, trial 1 of 3 after code started folding click-level steps | `web_task` | Done; 8,848.86 m | 21 | 471 s | Planning took 78 s, including one rewrite ("Search the site for 'Mount Everest'"). The article step failed one of its two checks, a replan opened the article directly, and the replan's last two goals came back named "Step 1" and "Step 2": the planner returned sub-goals with no goal text. That's a new bug |
-| 20 | Everest, trial 2 of 3 | `web_task` | Done; 8,848.86 m | 9 | 171 s | Three sub-goals, planned in 32 s with no rewrite: open the search box (already open), search for Mount Everest (judged by the model), and open the article (proven by both checks) |
-| 21 | Everest, trial 3 of 3 | `web_task` | Done; 8,848.86 m | 9 | 166 s | The same plan as trial 2, and nearly the same run |
+| 14 | Tokyo flights, read-only mandate | `brief_task` | A brief, and **no questions** | — | 15 s | It assumed a departure date rather than asking. A 7B planner under-asks |
+| 15 | python.org | `brief_task` + `web_task` | Done and verified, **value "3.15"** | 0 | 70 s | Evidence proved the page was open; the reader took a pre-release row |
+| 16 | Everest | `web_task` | Failed | 40 | 487 s | Four click-level steps; "Click the search button" failed three times. Led to plan review flagging click-level steps |
+| 17 | Tokyo again, new question rules | `brief_task` | Two questions, both with defaults | — | 17 s | It now asks for dates. It still never asked where the trip starts |
+| 18 | Everest, plan review on | `web_task` | Done; 3 of 4 verified | 27 | 442 s | One rewrite, merging two steps. Fastest Everest at the time |
+| 19 | Everest, code folding click-level steps | `web_task` | Done | 21 | 471 s | A replan returned sub-goals with no goal text — a new bug |
+| 20 | Everest, trial 2 | `web_task` | Done | 9 | 171 s | Three sub-goals, no rewrite |
+| 21 | Everest, trial 3 | `web_task` | Done | 9 | 166 s | Nearly the same run |
 
-Runs 19 to 21 measure the folding code: 3 of 3 found the right answer, with a median of 9 steps and 171 s. Runs 11 and 18 took 35 and 27 steps, and run 16 failed. None of the three was fully verified, because the search step has no evidence and a model judged it. Three runs is still a small sample.
+Runs 19–21: 3 of 3 right, median 9 steps and 171 s, against 27 to 35 steps or failure before folding. None fully verified — the search step had no evidence yet.
 
-## Trying it out (2026-09-18)
+### Step 7 onward: measured, and harder tasks (runs 22–31)
 
-Two runs from the command line on the same machine, after step 7.
-
-| # | Task | Path | Outcome | Steps | Time | What it showed |
-|---|---|---|---|---|---|---|
-| 22 | Eiffel Tower height, starting on the article | CLI, no mandate | Done and verified; "330 meters (1,083 feet)" | 0 | 47 s | 16 s of it was the brief, which had nothing to ask. The sub-goal's url check already passed, so nothing was clicked, and the answer came from the article's main content |
-| 23 | "Find me a cheap round-trip flight to Tokyo" on Google Flights | CLI, no mandate | Failed | 40 | 542 s | Two findings, below |
-
-Run 23 is the first live test of a site that isn't a document, and it found both a good surprise and a bug:
-
-- **The brief asked what runs 14 and 17 never did:** "What city are you departing from?", with New York as the default. The planner's question set varies between runs, so under-asking isn't constant.
-- **`select` couldn't drive an autocomplete.** Google Flights' city fields are `role="combobox"` widgets, not `<select>` elements. The executor reasonably chose `select` for them, and `select` called Playwright's `select_option`, which only works on a real `<select>`. Every attempt raised an error and cost a step, so the search was never run and the task burned all 40 steps. The typing path already knew how to drive these widgets: it clicks, waits for the inner input to mount, clears it through React's setter, and types character by character so the autocomplete fires.
-
-Driving the page by hand afterwards showed two more problems behind the first one:
-
-- **Those fields complete text inline as you type.** Typing "Tokyo" character by character, as the controller did, raced the field's own completions and left "TokTokyoyo" in the box. With garbage in the field no suggestion matched, so nothing could be chosen.
-- **The page renders several identical inputs.** "Where to?" existed twice on a fresh page, and eight "Where…" inputs appeared after a few interactions, only one of them live. Typing into a dead one does nothing and reports no error, which fits run 23 entering both cities three times with no effect.
-- **Committing needs a suggestion.** These widgets only accept a city once an option from the `role="option"` list is chosen. Enter alone does nothing when no option matches.
-
-**Fixed:** `select` uses the browser's picker on a real `<select>`, and otherwise types the text and takes the suggestion with Enter. The guards that cover typing now cover `select` too: the mandate's data-entry check already did, and the safety gate's sensitive-field check and the mandate-approves path were extended to match. `tests/sites.py` gained a real dropdown and a Google-Flights-style autocomplete to test both paths.
-
-Typing into a field that completes inline now goes in as one insertion rather than key by key, and `select` takes the first suggestion by clicking it, falling back to Enter. The observer skips elements covered by something else, keeping them whenever the check can't tell. Plain typing deliberately still does **not** commit a suggestion, so the measured Wikipedia and python.org tasks keep behaving as they did.
-
-| # | Task | Path | Outcome | Steps | Time | What it showed |
-|---|---|---|---|---|---|---|
-| 24 | Eiffel, python.org, and Everest, one run each, after the typing and observer fixes | `trials` | All three right **and verified** | 0 / 0 / 5 | 55 / 78 / 130 s | No regression from hiding covered elements. python.org came back verified, where the first comparison managed 1 of 3. One run each, so this is a check, not a measurement |
-| 25 | Tokyo again, with all three fixes | CLI, no mandate | Failed | 27 | 469 s | 18 clicks and 9 types, and **no `select` at all**, so the suggestion-commit path never ran. The executor keeps choosing `type` for these fields, and `type` doesn't commit by design |
-
-**What's still in the way:** the gesture that commits an autocomplete lives only on `select`, and a 7B executor reaches for `type`. Making `type` commit whenever a combobox is showing suggestions would likely fix Google Flights, but it changes what typing means everywhere, including the Wikipedia search step in the measured Everest task. That's a change to make with the trials tool, not by assumption.
-
-### Making `type` commit: measured, then reverted
-
-Nine trial runs of the three known tasks on a build where `type` took the suggestion whenever the focused field looked like a combobox, plus one more Tokyo attempt.
-
-| Task | Config | Done | Right | Verified | Median steps | Median time |
-|---|---|---|---|---|---|---|
-| eiffel | `local-16gb` | 3/3 | 3/3 | 3/3 | 0 | 36 s |
-| python-latest | `local-16gb` | 3/3 | 3/3 | 1/3 | 3 | 85 s |
-| everest | `local-16gb` | **0/3** | 1/3 | **0/3** | 25 | 440 s |
-
-| # | Task | Path | Outcome | Steps | Time | What it showed |
-|---|---|---|---|---|---|---|
-| 26 | Tokyo again, with typing that commits | CLI, no mandate | Failed | 19 | 284 s | Suggestions taken: **0**. Google Flights' city fields never offered a `role="option"` list to take in that run, so the change bought nothing where it was aimed |
-
-**Everest is the cost.** It had been 1 of 1 right and verified in run 24, in 5 steps. Under this change no run finished, two returned no elevation at all, and the median run took 25 steps and over 7 minutes. The receipts show two of the three runs left on `en.wikipedia.org/w/index.php`, once with the URL reading `?search=&title=Special%3ASearch` — the search page with **nothing in the query**. One of those failed its search step on a text check for "Mount Everest" that wasn't on the page, because nothing had been searched for. The third run did reach the article, and then spent its steps on a model-judged "find the elevation" sub-goal that returned not achieved with confidence 0 every time.
-
-Driving Wikipedia by hand afterwards showed why it engaged there at all. The search box is a plain `<input name="search">` on a freshly loaded page, but once the controller has clicked it and cleared it through React's setter, the widget hydrates into `role="combobox"` with `aria-autocomplete="list"` — indistinguishable, to the check, from a Google Flights city box. So every Wikipedia search became a click on whatever Wikipedia suggested first, and the step that was supposed to run a search stopped running one.
-
-**Reverted.** Committing a suggestion stays on `select`, where every known task came back right and verified. `tests/test_select_action.py` now pins the decision from both sides: `select` takes the suggestion, `type` deliberately leaves the field uncommitted. Google Flights stays unsolved by design — the executor prefers `type` for these fields, and making `type` commit costs three known tasks to fix one unknown. The next thing to try is the other end: teaching the executor to reach for `select` on a combobox, which changes one model's choice rather than what typing means everywhere.
-
-### Three harder tasks (2026-09-18)
-
-Tasks chosen to be less like reading an encyclopedia: a site you have to drive, a site you have to sign in to, and a page whose answer is one item in a list of near-identical ones.
-
-| # | Task | Runs | Outcome | Steps | Time |
+| # | Task | Outcome | Steps | Time | What it showed |
 |---|---|---|---|---|---|
-| 27 | Tokyo again, with notes about how Google Flights works, supplied by the user | 1 | Failed | 40 | 477 s |
-| 28 | Sign in to saucedemo.com and read a product price, with the credentials as `{{placeholders}}` from the environment | 4 | 1/4 done | 40 | 124 s |
-| 28b | The same, after the two fixes below | 3 | **3/3 done and right**, 1/3 verified | 35 | 158 s |
-| 29 | The newest commit on this repository's `main` branch, from GitHub's commits page | 2 | 2/2 done and **verified**, both values **wrong** | 0 | 35 s |
+| 22 | Eiffel, starting on the article | Done and verified | 0 | 47 s | 16 s of it was the brief, which had nothing to ask |
+| 23 | Tokyo flights | Failed | 40 | 542 s | The brief asked what runs 14 and 17 never did. `select` couldn't drive an autocomplete |
+| 24 | The three known tasks, after the typing and observer fixes | All right **and verified** | 0 / 0 / 5 | 55 / 78 / 130 s | A check, not a measurement |
+| 25 | Tokyo again | Failed | 27 | 469 s | 18 clicks, 9 types, **no `select` at all** — the commit path never ran |
+| 26 | Tokyo, with typing that commits | Failed | 19 | 284 s | Suggestions taken: **0**. The change bought nothing where it was aimed, and cost Everest every run |
+| 27 | Tokyo, with the user's notes | Failed | 40 | 477 s | The notes gave the best plan any config has produced for that site. 49 of 95 history entries were mandate blocks |
+| 28 | Sign in to saucedemo, read a price | 1 of 4 done | 40 | 124 s | A guessed URL 404s into a blank single-page app; the url check passed on it |
+| 29 | Newest commit on a GitHub commits page | 2/2 done and **verified**, both **wrong** | 0 | 35 s | The reader returns the last match in whatever text it gets |
+| 30 | Sign-in, after the guessed-URL and evidence fixes | 3/3 right and verified | 14 | 63 s | From 40 steps and 218 s. No credentials re-entered, no logout |
+| 31 | Tokyo, with dates supplied and the date fix | 0/2 done, **5 of 6 sub-goals proven** | 40 | 537 s | Both cities and both dates proven by code. What's left is running the search |
 
-**27 — the notes fixed the planning, and planning wasn't the problem.** With the user's notes in the brief, the 7B planner wrote a one-step plan — "Search Google Flights for a round-trip from New York to Tokyo on \<dates\>" — with real, checkable evidence: `page text contains "Flight results"`. That is the best plan any config has produced for that site, and it's the answer to whether user-supplied notes help: they do, at the step where they're read. The brief's own thinking had absorbed them — "clear the default departure city, type in 'Tokyo', and select the matching suggestion" — which is the site's actual gesture, not a generic plan. The run still failed, because the executor couldn't get the search to run. The wall is the one the reverted change was aimed at, and it's in the executor, not the plan.
+Values were checked against the live pages: 330 m, 3.14.7, and 8,848.86 m (the 2020 China–Nepal survey).
 
-**28 — signing in works, and a guessed URL is what breaks it.** One run in three signed in with `{{username}}` and `{{password}}`, opened the Sauce Labs Backpack, and returned `backpack_price` 29.99, right and verified, in 36 steps (7 in a later run). Neither the username nor the password appears anywhere in the run records. The failures were all the same failure, and reading them is what the action trail was added for:
+### One comparison worth keeping: a 14B planner
 
-```
-1. navigate https://www.saucedemo.com/login.html
-2. wait
-...
-5. wait (element_id 1 not on page (valid: []))
-6. wait (element_id 2 not on page (valid: []))
-```
-
-`https://www.saucedemo.com/login.html` doesn't exist — the login form is at `/`, where the run already started. The planner guessed the URL, its url check demanded it, and the browser went. What happens next is worth spelling out, because it defeats the obvious fix:
-
-1. The server answers **404**.
-2. The 404 page is a single-page-app fallback: it redirects to `/?/login.html`, which answers **200**, and rewrites the address back to `/login.html`.
-3. So the browser sits at exactly the URL the planner guessed, with a 200 status, and **nothing rendered**.
-
-The url check passed — right address, no error — and the executor then chose elements that weren't there for 35 of the remaining steps, because the observation was empty every time.
-
-**Two fixes, and only the second one would have caught this.**
-
-- The browser records the status its own document answered, and a url check fails on an error page: "page is at …/login.html, which answered 404". A status that isn't known — no navigation during that sub-goal — still passes, so nothing that worked before changes. This closes a real hole: a url check proved an address, not a page. It does **not** close saucedemo's, because that redirect leaves a 200 behind.
-- An observation with no elements and no text ends the attempt. The agent goes back one page; if that page is empty too, the sub-goal fails and the plan changes, instead of 35 steps of choosing elements that aren't there.
-
-The test site gained both shapes: a `/login.html` that 404s, and a `/nothing` that answers 200 with an empty body.
-
-**Measured after the fixes: 3 of 3 done and right**, against 1 of 4 before, with one run fully verified and the other two carrying a model-judged sub-goal. Two of the three runs guessed `/login.html` again, and the trail shows the recovery working:
-
-```
-1. navigate https://www.saucedemo.com/login.html
-2. go_back (Nothing on the page)
-3. navigate https://www.saucedemo.com/login.html
-4. go_back (Nothing on the page)
-5. type (el=1) "{{username}}"
-6. type (el=2) "{{password}}"
-7. click (el=3)
-```
-
-`secret_sauce` appears in none of the run records, in any of the seven runs.
-
-**No regression on the known tasks** after both fixes: Eiffel, python.org, and Everest each came back right in one run, two of the three verified (0, 0, and 8 steps; 50, 76, and 175 s). Everest's search step was judged by a model that run, which is the usual 7B variance rather than anything new.
-
-**29 — a verified run with the wrong answer, which is the failure that matters most.** Both runs opened the commits page, passed their url check, and returned `latest_commit` as "Fix premature done, broken replan loop, and add answer extraction", a real commit from weeks earlier, sitting in the middle of the same page. The newest one was "Type into autocompletes in one go, and hide covered elements". This is exactly what shape checks can't catch: the value is a well-formed commit subject, from the right page, of the right type. Nothing about it is malformed — it's just not the newest, and "newest" is a property of where it sits in the list, which is what flattening the page to text throws away. A value that means "the first one" needs to be read positionally, not described to a model in prose.
-
-### Reading the three failures, and fixing what they showed (2026-09-19)
-
-Run records now carry the executor's action trail, so each failure could be read rather than guessed at. Each of the three turned out to be a different bug.
-
-**Tokyo: five things, and the browser layer isn't one of them.** Driving Google Flights through the controller by hand entered both cities, took both suggestions, and clicked Search — the widgets work. Two theories died on contact: a read-only mandate blocks neither the autocomplete (5 suggestions appear with it on) nor the search. What's actually wrong:
-
-1. **The task has no answer.** "A cheap round-trip flight to Tokyo" names no dates, and Google Flights won't search without them. With both cities filled and Search clicked, the URL becomes a real `tfs=…` search URL and the page still shows the home page.
-2. **The only prices on that page are adverts** — `$126`, `$170`, `$268` are promo cards for Atlanta departures. A run that reads a price there reads an advert.
-3. **The evidence could never pass.** The check was `page text contains "New York"`, and a value typed into a field is not page text: after typing, `input_value` is "New York" while `inner_text(body)` doesn't contain it. That applies to every form-filling task, not just this one.
-4. **The executor** picks `type` (which never commits a suggestion), clicks blindly, and emitted **5 `type` actions with no text at all**.
-5. **Half its context was noise:** 49 of 95 history entries were repeated mandate blocks — `jserror` 22 times, `batchexecute` 21 — because `worth_reporting` treats any same-origin fetch write as possibly the agent's own doing, and a Google SPA fires telemetry on every step.
-
-**The sign-in: it logs itself back out.** Beyond the guessed URL, the receipts show sub-goal "Sign in" failing with the page back at `/` after the executor clicked around the inventory page, then retyping credentials — including `type (el=2) "{{password}}"` followed by `type (el=2) "{{username}}"`, both into the password field. And the last sub-goal ("Find the price") carried no evidence at all, so it fell to a model verdict: that is why runs that were right came back unverified.
-
-**GitHub: the reader takes the last one, not the first.** The commits arrive in page order with the answer at character 245, so nothing is lost in flattening — the model simply returns the last matching item in whatever window it is given, identically every time at temperature 0:
-
-| Text given to the reader | Answer returned | Its position |
-|---|---|---|
-| All 3,875 characters | "Redesign dashboard UI…" | 3,609 |
-| First 1,200 characters | "Think before acting…" | ~1,150 |
-| First 600 characters | "Make select work on autocomplete fields…" | ~560 |
-
-Trimming the page doesn't help; it only moves the wrong answer. But the same model asked to **list** the commits in page order gets the order right, 2 of 2.
-
-### What changed
-
-| Fix | Why |
-|---|---|
-| A `text` check also passes when a **field on the page holds** the text | A value typed into a field isn't page text, so "prove I entered New York" was unsatisfiable |
-| A value can declare `pick: first` or `last`; the reader is asked to **list** every match in page order and **code takes the end** | Picking one of many is what a small model gets wrong; ordering them is what it gets right |
-| **The caller's value spec wins** over the planner's, by name, and a requested value the plan never declares is read on the last step | The planner rewrites the caller's values in its own words and drops their `pattern`, bounds, and `pick` |
-| A step whose only job is reading gets a **value check** (`{{$x}} was read`) instead of a model verdict | A run that read the right value still came back unverified |
-| The executor hears about each blocked endpoint **once per run** | Every block is still recorded and counted; the 22nd `jserror` taught it nothing |
-| A `type` or `select` with no text is refused before it runs | Typing nothing clears the field the last step filled, and costs a step |
-
-### What it did to the numbers
-
-| Task | Before | After |
-|---|---|---|
-| GitHub newest commit | 0/3 right, **3/3 verified and wrong** | **3/3 right and verified**, 2 steps median |
-| Tokyo, with dates and notes | 1 sub-goal, none completed, 40 steps | **3 of 5 sub-goals proven**, both cities entered |
-| Sign in and read a price | 3/3 right, **1/3 verified** | 2/3 right, **2/3 verified** — every run that finished was proven |
-| Eiffel / python.org / Everest | right, 2 of 3 verified | right, 2 of 3 verified (no regression) |
-
-The Tokyo run is the clearest read on the fixes, because three of them show up in one trail:
-
-```
-2. "Clear the 'Where from?' field and type 'New York'"  ✓ found on the page
-3. "Clear the 'Where to?' field and type 'Tokyo'"       ✓ found in a field on the page
-4. "Set the Departure date to 2026-10-15"               ✗ not found on the page or in its fields
-```
-
-On the sign-in task the change is in what "verified" covers: the step that reads the price now proves itself with `{{$backpack_price}} was read` instead of a model's opinion, so both runs that finished came back fully verified. The one that didn't finish is the wander — it signed in, clicked on, and logged itself back out.
-
-Sub-goal 3 is the check that could never have passed before. Mandate-block noise fell from **49 of 95** history entries to **4 of 50**, and there were no empty `type` actions at all. What stops it now is narrower than anything above: it typed `2026-10-15` into the date box, and Google Flights reformats the date it shows, so a text check for the ISO string can't match. Dates written the way a site writes them are the next thing in the way.
-
-### The date format and the wandering (2026-09-20)
-
-The two things left in the way after the last round, both now fixed and measured.
-
-**Dates: the field holds nothing until its dialog is confirmed.** Typing `2026-10-15` into Google Flights' Departure box does land in the field — and then the picker it opened throws it away, because these boxes commit only when "Done" is pressed. That is the same shape as the city combobox, one layer along: the run typed both dates and searched with neither.
-
-So a `type` that **opens a dialog** now presses that dialog's own confirm control — a button reading Done, OK, Apply, Confirm, Save, Set or Select, inside a `[role=dialog]` that wasn't open before the typing started. This cannot bring back the harm that committing suggestions did (0 of 3 Everest runs): checked live, neither Wikipedia's search box nor python.org's opens a dialog at all, and a suggestion list is not one.
-
-The second half is the check. Once committed, the field reads `Thu, Oct 15` — the site's wording, not the plan's — so a text check for `2026-10-15` still couldn't match. A text check now matches a date however a site writes it: `Oct 15`, `October 15`, `15 Oct`, `15 October`, `10/15/2026`, `15/10/2026`. A different day still fails.
-
-End to end on the live site, with one plain `type` action and nothing else:
-
-```
-dialog_confirmed button=done
-FIELDS: ['Atlanta', 'Atlanta', 'Thu, Oct 15', 'Thu, Oct 15']
-CHECK: True | found in a field on the page as Oct 15
-```
-
-**The wandering: a goal is done when it is provably done.** The executor kept acting after a sub-goal was met — on the practice site it signed in, carried on clicking into the menu, and logged itself back out, which failed the sub-goal it had just satisfied. Now the checks code can settle (url and text, no model call) are evaluated at the top of each step, and a goal whose checks have gone from failing to passing ends there. It needs a check that was **false when the goal began**, so a goal whose url already matched still does its work.
-
-| Task | Before | After |
-|---|---|---|
-| Sign in and read a price | 2/3 right, 2/3 verified, 40 steps, 218 s | **3/3 right and verified**, **14 steps**, **63 s** |
-| Tokyo (Google Flights) | 1 of 5 sub-goals proven, both dates failed | **5 of 6 proven, both dates among them**; the search step still fails |
-| Eiffel / python.org / Everest | right, 2 of 3 verified | **all three right and verified**, 0 / 3 / 8 steps |
-
-The sign-in trail is the whole fix in one line — step 7 signs in, and step 8 is already working on the next goal:
-
-```
-5. type (el=1) "{{username}}"
-6. type (el=2) "{{password}}"
-7. click (el=3)          ← proven here; the goal ends
-8. click (el=10)
-```
-
-No credentials re-entered, no logout, and `secret_sauce` in none of the records. Every sub-goal in all three runs was proven by code, with no model verdicts.
-
-**Tokyo came back "done, verified" — and it was wrong.** That is the most useful result of the round, because the false proof was one of this week's own fixes. The run never set a date and never searched: it spent 21 steps moving between the two city boxes, read `cheapest_price` as **129.0** — a promo card on the home page — and its single sub-goal, "Search for round trips from New York to Tokyo, departing 2026-10-15", had exactly one piece of evidence: the `{{$cheapest_price}} was read` check that a reading step is now given.
-
-Reading a number does not prove a search ran. The rule was too wide: it gave that proof to any sub-goal with values and no evidence, including one whose job was to *do* something. It now applies only to a step whose whole job is reading — one that starts with read, find, get, locate, look up, check, extract, note, record, report, identify, determine, retrieve, copy or write down, and doesn't mention changing anything. A searching step with no evidence goes back to a model verdict, which is weaker but says so in its receipt.
-
-With the rule narrowed, two more runs came back **not done and not verified** — the honest answer — and they show the date fix working in a live agent run for the first time:
-
-```
-goal 2  "Clear the 'Where from?' field and type 'New York'"   ✓ text
-goal 3  "Clear the 'Where to?' field and type 'Tokyo'"        ✓ text
-goal 4  "Set the Departure date to 2026-10-15"                ✓ text
-goal 5  "Set the Return date to 2026-10-22"                   ✓ text
-goal 6  "Search the site for flights from New York to Tokyo…"  ✗ text
-```
-
-Five of six sub-goals proven by code, both dates among them, where before this round both date steps failed. What's left is the last one: running the search. Both runs spent their remaining steps on the city boxes instead, which is the executor's choice of verb and element — no browser-layer fix reaches it, and it is what's left of roadmap item 10. The experiment's `cheapest_price` also wants pinning to the results page before it means anything, since the home page is full of prices.
-
-## Measured with `web-lobster trials` (step 7)
-
-The same machine, after [step 7](design/step-7-trials-and-planners.md) added shape checks on values, text checks for search steps, and the trials tool. `web-lobster trials trials/web.yaml -n 3` ran each task three times under each config, interleaved by run, with fresh memory for every run and each value scored against its known answer. Mandates were read-only.
-
-### Part A: 7B for every role against a 14B planner
-
-18 runs in 54 minutes.
+18 runs, `web-lobster trials trials/web.yaml -n 3` across two configs, 54 minutes.
 
 | Task | Config | Done | Right | Verified | Median steps | Median time |
 |---|---|---|---|---|---|---|
@@ -316,32 +206,14 @@ The same machine, after [step 7](design/step-7-trials-and-planners.md) added sha
 | everest | `local-16gb` | 1/3 | 1/3 | 1/3 | 8 | 167 s |
 | everest | `local-16gb-14b-planner` | 3/3 | 3/3 | 3/3 | 5 | 193 s |
 
-What the run records show:
+A bigger planner fixed multi-step planning and doubled the time on lookups, because Ollama swaps a 9 GB and a 4.7 GB model in and out. It didn't make values more reliable: those are read by the executor's 7B model in both configs. The 7B failures here were a planner-invented text check ("elevation of Mount Everest is", a phrase Wikipedia never shows) — still open as roadmap item 5.
 
-- **Everest, 7B:** the two failures (20 and 8 steps) broke on the same step. "Open the article about Mount Everest" had two checks. The url check passed, and the browser was on the article, but the planner's text check for "elevation of Mount Everest is" failed, because Wikipedia never uses that phrase. The search step, now with a text check for its term, was proven by code in every run.
-- **Everest, 14B planner:** the same three-step plan every time (open the search page, search for 'Mount Everest', open the article), with only a url check on the article. All three runs were fully verified, in 5 steps each.
-- **Eiffel Tower:** perfect under both configs. The 14B config took twice as long, because Ollama swaps the 9 GB planner model and the 4.7 GB executor model in and out.
-- **python.org, 7B:** the typed value was 3.14.7 in all three runs, but the free-text answer said "3.15" all three times. In two runs the planner declared `latest_version` itself, without a pattern, and that replaced the trial's version with its pattern: a bug.
-- **python.org, 14B planner:** the free-text answer, written by the 14B model, said 3.14.7 all three times. The typed value, read by the 7B executor model, came back with nothing that passed the version pattern in two runs, one of which never left the downloads page. Those runs reported the value as missing rather than wrong, and weren't verified. Why the reader failed there isn't explained yet.
-- **Blocked requests** on python.org ranged from 61 to 585 per run, all of them the page's own scripts.
+Plan reuse (`local-16gb-plan-reuse`, shared memory) has not been measured; its first run was lost.
 
-### Part B: plan reuse
+## Still weak
 
-`local-16gb-plan-reuse` with shared memory, so later runs of a task can reuse a plan that worked earlier, was still running when this was written.
-
-## Reproduce
-
-```bash
-ollama pull qwen2.5-coder:7b
-web-lobster run -c configs/local-16gb.yaml -u https://en.wikipedia.org/wiki/Eiffel_Tower "How tall is the Eiffel Tower?"
-```
-
-Over MCP, start `web-lobster mcp -c configs/local-16gb.yaml` from your client and call `web_task` with, for example:
-
-```json
-{"task": "Find the version number of the latest Python 3 release on python.org.",
- "mandate": {"origins": ["https://www.python.org"], "expires_in_minutes": 20},
- "start_url": "https://www.python.org/downloads/",
- "values": [{"name": "latest_version", "type": "text", "description": "the latest Python 3 release version"}],
- "include_page_text": true}
-```
+- **Driving a page.** A 7B executor picks the wrong verb and the wrong element on a page with more than one input. That is the last thing between web-lobster and the Google Flights task.
+- **Sample sizes.** Three runs per setup leaves wide error bars, and some numbers here are one run.
+- **Live sites change.** `python-latest` needs its expected version updated with each release; an outage reads as a failure.
+- **Honest tasks only.** These runs show a local model doing real work, not how often it falls for a planted instruction. The benchmark's live mode hasn't run.
+- **Claude configs have never been run live.** They need an API key.

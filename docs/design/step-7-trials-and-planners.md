@@ -1,6 +1,6 @@
 # Step 7: measure, then try a stronger planner
 
-**Status:** built on `feat/planner-briefing`, 2026-09-14. These are phases 1 and 2 of [../roadmap.md](../roadmap.md). Live results are in [../live-testing.md](../live-testing.md).
+**Status:** built on `feat/planner-briefing`, 2026-09-14. `web-lobster trials` is how every change since has been judged. Live results: [../live-testing.md](../live-testing.md). What's next: [../roadmap.md](../roadmap.md).
 
 ## Goal
 
@@ -48,7 +48,7 @@
 
 ## Results so far
 
-The first comparison, 18 runs of `trials/web.yaml` with fresh memory ([../live-testing.md](../live-testing.md#measured-with-web-lobster-trials-step-7)):
+The first comparison, 18 runs of `trials/web.yaml` with fresh memory ([../live-testing.md](../live-testing.md#one-comparison-worth-keeping-a-14b-planner)):
 
 - **The 14B planner fixed multi-step planning on Everest:** 3 of 3 right and verified, against 1 of 3 for the 7B baseline.
 - **It doubled the time on lookups** that start on the answer page (122 s against 59 s median), because Ollama swaps the two models.
@@ -56,12 +56,12 @@ The first comparison, 18 runs of `trials/web.yaml` with fresh memory ([../live-t
 - **Search text checks worked:** every Everest search step was proven by code.
 - **Shape checks worked:** the two missed python.org values came back missing, not wrong, and those runs weren't verified.
 
-Two new problems, now phase 1 items on the roadmap:
+Two new problems came out of it:
 
-1. **Guessed text checks.** The 7B planner's text check for "elevation of Mount Everest is" made two runs fail on the right page.
-2. **Dropped value checks.** When the planner declares a value with the same name as the caller's, the caller's pattern is dropped.
+1. **Guessed text checks.** The 7B planner's text check for "elevation of Mount Everest is" made two runs fail on the right page. Still open.
+2. **Dropped value checks.** When the planner declares a value with the same name as the caller's, the caller's pattern is dropped. Fixed: the caller's spec replaces the planner's by name.
 
-Plan-reuse runs with shared memory were still in progress when this was written. The lessons are collected in [../learnings.md](../learnings.md).
+Plan-reuse runs with shared memory have never produced a recorded comparison. The lessons are collected in [../learnings.md](../learnings.md), and everything the trials tool has settled since is in [../live-testing.md](../live-testing.md).
 
 ## Known limits
 

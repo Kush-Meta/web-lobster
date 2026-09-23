@@ -5,11 +5,11 @@ web-lobster set out to be a web agent you can hand a real task without handing i
 **The evidence:**
 
 - A scripted poisoned-page benchmark: 7 trap scenarios, each under 5 defense setups, with a hijacked executor and an honest one.
-- 21 recorded live runs on Wikipedia, python.org, and Google Flights, with qwen2.5-coder:7b on an Apple M4 Mac with 16 GB of memory ([live-testing.md](live-testing.md)).
-- An 18-run comparison of a 7B and a 14B planner with `web-lobster trials`, scored against known answers. Plan-reuse runs were still going when this was written.
-- 316 automated tests.
+- 31 recorded live runs on Wikipedia, python.org, Google Flights, GitHub, and a practice shop that needs signing in, with qwen2.5-coder:7b on an Apple M4 Mac with 16 GB of memory ([live-testing.md](live-testing.md)).
+- Roughly 80 scored runs of `web-lobster trials`, including an 18-run comparison of a 7B and a 14B planner.
+- 345 automated tests.
 
-All live testing happened on 2026-09-14. Design records: [step 5](design/step-5-mcp-server.md), [step 6](design/step-6-planner-briefing.md), [step 7](design/step-7-trials-and-planners.md). Plan: [roadmap.md](roadmap.md).
+Design records: [step 5](design/step-5-mcp-server.md), [step 6](design/step-6-planner-briefing.md), [step 7](design/step-7-trials-and-planners.md), [step 8](design/step-8-signed-in-tasks.md). Plan: [roadmap.md](roadmap.md).
 
 ## Contents
 
@@ -74,7 +74,7 @@ An honest executor completed all seven tasks under every setup, so the defenses 
 - In the first end-to-end MCP test, declined confirmations left a newsletter form empty, and the run still came back verified: a request check for `POST /api/subscribe` passed on a submission with no email in it ([step 5](design/step-5-mcp-server.md), decision 14).
 - MCP SDK 2.x renamed `inputSchema` to `input_schema`, and web-lobster's own MCP client silently saw every server as having no tools. Pinning `mcp>=2.2,<3` came out of that.
 
-**Evidence, from live testing:** fourteen problems that no test had caught ([live-testing.md](live-testing.md#what-was-fixed)):
+**Evidence, from live testing:** fourteen problems in the first round that no test had caught ([live-testing.md](live-testing.md#what-live-testing-found)):
 
 - a text-only model rejecting images;
 - Ollama's default context cutting pages short;
@@ -91,7 +91,7 @@ An honest executor completed all seven tasks under every setup, so the defenses 
 - a config silently switching to paid Claude models;
 - log noise in the MCP server.
 
-Two more surfaced in the trials comparison (sections 4 and 5).
+Eleven more followed, once the tasks got harder: a `select` that couldn't drive an autocomplete, a field that completed inline and turned "Tokyo" into "TokTokyoyo", duplicate inputs where only one was live, values that never committed, a url check that passed on a 404, an evidence check that could never pass because typed text isn't page text, a date the site rewrote in its own words, a reader that always took the last match, the caller's value shape being dropped, an executor that logged itself back out, and half an executor's context filled with the same blocked endpoint.
 
 **What changed:** every feature gets live runs before it's called done, and every run is written down, failures included, with what it showed.
 
@@ -199,7 +199,7 @@ The last row is the URL-guessing mistake again, with text instead. Treating sent
 - Memory isolated per run unless sharing it is what's being measured.
 - Results scored in code: done, right, verified, median steps, and median time.
 
-**The first change it rejected was one of ours.** Google Flights' city boxes only accept a city when one of their suggestions is chosen, and the executor reaches for `type`, not `select`. Making `type` commit the suggestion looked like the obvious fix, and it was easy to believe after watching one site. Measured, it left Everest at 0 of 3 done, from 1 of 1 right and verified, because Wikipedia's search box also becomes a `role="combobox"` the moment the field is clicked and cleared — so every search turned into a click on Wikipedia's first guess, and two runs ended on a search page with an empty query. It didn't even help where it was aimed: the Tokyo run took no suggestions at all. Reverted, with the numbers in [live-testing.md](live-testing.md#making-type-commit-measured-then-reverted). The lesson underneath: a fix aimed at one site, made inside a primitive every site goes through, is a change to every task you already had working.
+**The first change it rejected was one of ours.** Google Flights' city boxes only accept a city when one of their suggestions is chosen, and the executor reaches for `type`, not `select`. Making `type` commit the suggestion looked like the obvious fix, and it was easy to believe after watching one site. Measured, it left Everest at 0 of 3 done, from 1 of 1 right and verified, because Wikipedia's search box also becomes a `role="combobox"` the moment the field is clicked and cleared — so every search turned into a click on Wikipedia's first guess, and two runs ended on a search page with an empty query. It didn't even help where it was aimed: the Tokyo run took no suggestions at all. Reverted, with the numbers in [live-testing.md](live-testing.md#driving-a-real-widget). The lesson underneath: a fix aimed at one site, made inside a primitive every site goes through, is a change to every task you already had working.
 
 **Live sites change, too.** `python-latest`'s expected version goes stale with every Python release. An outage reads as a failure. Blocked-request counts on python.org ranged from 61 to 585 across six runs of the same task.
 
@@ -224,10 +224,7 @@ The last row is the URL-guessing mistake again, with text instead. Treating sent
 - **Eiffel Tower**, which starts on the answer page: both configs were perfect, but the 14B config took twice as long. The 9 GB planner and the 4.7 GB executor don't both stay loaded next to a browser, so Ollama swaps them.
 - **python.org:** the 14B config found the right version in its free-text answer all three times, because the planner's model writes the answer. But typed values are read by the executor's model, the same 7B model in both configs. Under the 14B config it returned nothing that passed the version pattern twice, including a run that never left the downloads page, where the baseline's reader succeeded. Why isn't explained yet. What is clear: a stronger planner doesn't make a weaker reader better, and the swaps doubled the time.
 
-**Still to measure:**
-
-- Plan reuse: `configs/local-16gb-plan-reuse.yaml` with shared memory, running as this was written.
-- A Claude planner: `configs/claude-planner-local.yaml` needs an API key.
+**Still to measure:** plan reuse (`configs/local-16gb-plan-reuse.yaml` with shared memory) and a Claude planner (`configs/claude-planner-local.yaml`, which needs an API key). Neither has produced a recorded comparison.
 
 ## 8. Thinking before acting
 
@@ -281,20 +278,21 @@ The last row is the URL-guessing mistake again, with text instead. Treating sent
 - **Say which of done, verified, and right a result is.** They're different claims.
 - **Check answers against the source.** 330 m and 3.14.7 were confirmed against the live pages, and "3.15" turned out to be a pre-release row.
 - **Read the records before explaining a result** (section 6).
-- **Commit checkpoints.** A session's scratch files, including half-finished logs, were wiped once mid-run.
+- **Commit checkpoints.** A session's scratch files, including half-finished logs, were wiped three times mid-run.
+- **Keep a record of what the agent did, not just what came out.** Two of the hardest failures were unreadable until run records carried the executor's action trail; each then took one line to explain.
 - **Measure before calling something an improvement,** with `web-lobster trials` rather than one run.
 
 ## 13. Still open
 
 In rough order of what the evidence says matters (the [roadmap](roadmap.md) has the plan):
 
-1. **Guessed text checks** made two 7B Everest runs fail on the right page (section 5).
-2. **The caller's value checks are dropped** when the planner declares a value of the same name (section 4).
+1. **The executor chooses badly on a page with several inputs.** It reaches for `type` where only `select` commits, and revisits the box it just filled. This is the last thing between web-lobster and a real booking flow, and no browser-layer fix reaches it.
+2. **Guessed text checks** made two 7B Everest runs fail on the right page (section 5).
 3. **The reader model decides whether values come back right** (section 7). A stronger model for reading values is worth measuring alongside planners.
 4. **Plan reuse and a Claude planner** are built but not yet measured.
 5. **How often real models fall for planted instructions** is unmeasured: the benchmark's live mode hasn't run.
 6. **Value-bound write rules** would close `allowed-write-abuse`.
-7. **Signed-in tasks** need mandate-scoped browser profiles, and a design record first.
+7. **Sessions don't persist.** Signing in inside a run works; carrying a session between runs needs mandate-scoped browser profiles ([design](design/step-8-signed-in-tasks.md), not built).
 
 ## Numbers at a glance
 
@@ -302,10 +300,13 @@ In rough order of what the evidence says matters (the [roadmap](roadmap.md) has 
 |---|---|
 | Scripted benchmark, hijacked executor, all defenses | 7/7 done, 1/7 harmful, 0/7 leaked, 0/7 false "done" |
 | Scripted benchmark, honest executor | 7/7 done under every defense setup |
-| Recorded live runs | 21, plus 18 scored trials (plan-reuse trials in progress) |
-| Problems found only by live runs | 16 |
+| Recorded live runs | 31, plus roughly 80 scored trial runs |
+| Problems found only by live runs | 25 |
 | Everest, before click-level folding | 1 of 5 attempts finished (runs 5, 7, 9, 11, 16) |
 | Everest, 7B, after folding (runs 19–21) | 3/3 right, median 9 steps, 171 s |
 | Everest, trials, 7B / 14B planner | 1/3 / 3/3 right; 3/3 verified with the 14B planner |
 | Lookups that start on the answer page | About 1 minute on 7B; about 2 minutes with the 14B planner |
-| Automated tests | 316 |
+| Sign in to a practice site and read a price | 3/3 right and verified, median 14 steps, 63 s |
+| Newest commit on a page of commits | 0/3 right before positional reads, 3/3 after |
+| Google Flights, cheapest fare | 5 of 6 sub-goals proven; the search step still fails |
+| Automated tests | 345 |
