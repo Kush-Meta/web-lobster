@@ -185,7 +185,8 @@ async def test_a_goal_stops_the_moment_it_is_proven(sites, tmp_path):
     assert clicks == 1  # asked once; the link took it there, and nothing else was tried
     # One action, then a step that noticed the goal was met instead of acting.
     assert result.steps_taken == 2
-    assert [line.split(". ", 1)[1] for line in result.actions] == ["click (el=1)"]
+    [only] = [line.split(". ", 1)[1] for line in result.actions]
+    assert only.startswith("click (el=1)") and "/checkout" in only  # one click, and what it did
     [receipt] = result.receipts
     assert receipt.achieved and receipt.basis == "evidence"
 
@@ -242,6 +243,74 @@ async def test_typing_with_nothing_to_type_is_refused(sites, tmp_path):
     assert any("needs text to enter" in line for line in result.actions)
     # The field check passed on what the field holds, not on page text.
     assert result.receipts[0].checks[0].detail == "found in a field on the page"
+
+
+async def test_a_url_that_led_nowhere_is_refused_the_second_time(sites, tmp_path):
+    a, _ = sites
+    # Live, the executor navigated to a made-up /2027 page three times in one
+    # run, because nothing ever told it what the first attempt did.
+    goal = SubGoal(id=1, goal="Read the speakers", success_criteria="Speakers are listed",
+                   evidence=[TextCheck(contains="Speakers")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    tries = 0
+
+    async def decide(**kwargs):
+        nonlocal tries
+        tries += 1
+        if tries <= 3:
+            return Action(action=ActionType.NAVIGATE, url=f"{a.origin}/login.html")  # a 404
+        return Action(action=ActionType.DONE, reason="gave up on that URL")
+
+    orchestrator.executor.decide = AsyncMock(side_effect=decide)
+
+    result = await orchestrator.run("Read the speakers", start_url=f"{a.origin}/slow")
+    _skip_without_chromium(result)
+
+    trail = "\n".join(result.actions)
+    # It went once, was told what happened, and was refused after that.
+    assert trail.count("navigate") == 1, trail
+    assert "answered 404" in trail
+    assert trail.count("already tried") == 2
+
+
+async def test_a_goal_whose_evidence_needs_a_dead_page_gives_up(sites, tmp_path):
+    a, _ = sites
+    # A planner invented a url check for a page that doesn't exist, the executor
+    # was refused from going there, and the run spent its budget bouncing
+    # between evidence it couldn't satisfy and a URL it couldn't visit.
+    goal = SubGoal(id=1, goal="Open the 2026 speakers page", success_criteria="Speakers are listed",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/login.html")])  # a 404
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(
+        return_value=Action(action=ActionType.NAVIGATE, url=f"{a.origin}/login.html")
+    )
+
+    result = await orchestrator.run("Open the speakers page", start_url=f"{a.origin}/links")
+    _skip_without_chromium(result)
+
+    assert not result.success
+    # One attempt at the dead page, then it stops rather than grinding.
+    assert result.steps_taken < 10, result.actions
+    assert sum("navigate" in line for line in result.actions) <= 3, result.actions
+
+
+async def test_an_action_says_what_it_did(sites, tmp_path):
+    a, _ = sites
+    goal = SubGoal(id=1, goal="Go to checkout", success_criteria="Checkout is open",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/checkout*")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+
+    async def decide(**kwargs):
+        return Action(action=ActionType.CLICK, element_id=element_id(kwargs["observation"], "Go to checkout"))
+
+    orchestrator.executor.decide = AsyncMock(side_effect=decide)
+
+    result = await orchestrator.run("Go to checkout", start_url=f"{a.origin}/links")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    # The history the executor reads carries the result, not just the attempt.
+    assert any("went to" in line and "/checkout" in line for line in result.actions), result.actions
 
 
 async def test_a_slow_page_is_waited_for_not_abandoned(sites, tmp_path):

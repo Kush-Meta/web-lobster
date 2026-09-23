@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from enum import Enum
+from urllib.parse import urlsplit
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -52,6 +53,10 @@ class Action(BaseModel):
     seconds: Optional[float] = None
     mcp_tool_name: Optional[str] = None
     mcp_tool_args: Optional[dict] = None
+    # What the action did, filled in after it ran. The executor used to see only
+    # what it had tried, never what came of it, and navigated to the same
+    # made-up URL three times in one live run.
+    outcome: Optional[str] = None
 
     @field_validator("element_id", mode="before")
     @classmethod
@@ -88,6 +93,13 @@ class PageElement(BaseModel):
     is_enabled: bool = True
 
 
+def _link_target(href: str) -> str:
+    """A link's path, or its origin and path when it leaves the current site."""
+    split = urlsplit(href)
+    path = (split.path or "/") + (f"?{split.query}" if split.query else "")
+    return path if not split.netloc else f"{split.netloc}{path}"
+
+
 class Observation(BaseModel):
     """Complete snapshot of the current page state.
 
@@ -111,6 +123,9 @@ class Observation(BaseModel):
             parts = [f"[{el.id}]", el.role, f'"{el.label}"']
             if el.value:
                 parts.append(f'value="{el.value}"')
+            if el.href:
+                # Where a link actually goes, so a URL never has to be guessed.
+                parts.append(f"→ {_link_target(el.href)}")
             if el.bbox:
                 parts.append(f"at ({int(el.bbox.x)},{int(el.bbox.y)})")
             if not el.is_enabled:
@@ -229,5 +244,7 @@ class AgentState(BaseModel):
                     parts.append(act.url)
                 if act.reason:
                     parts.append(f"({act.reason})")
+            if act.outcome:
+                parts.append(f"→ {act.outcome}")
             lines.append("- " + " ".join(parts))
         return "\n".join(lines) if lines else "(no actions yet)"

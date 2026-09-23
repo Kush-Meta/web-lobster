@@ -163,6 +163,29 @@ All six runs right and verified — the best numbers the three tasks have had. T
 
 One thing it did badly: after failing, it replanned into eight sub-goals, several of them paragraphs of instructions — "Navigate to the … website and locate the section for the 2027 festival. Click on the link to go to the 2027 festival page." Those can't be judged done or not. Plan review now flags a sub-goal that runs past 25 words or more than one sentence.
 
+### Feedback loops: telling the executor what it just did (2026-09-23)
+
+A dashboard task — the speakers at a literature festival — made the executor navigate to a made-up `/2027` page **three times in one run**. Reading the prompt explains why: its history said
+
+```
+- navigate https://www.jaipurliteraturefestival.org/2027
+```
+
+and nothing else. It could see what it had tried and never what came of it, so there was nothing to learn from. Four loops close that:
+
+| Loop | What changed |
+|---|---|
+| **An action reports its outcome** | History now reads `navigate …/2027 → went to …/2027, which has nothing on it`, `click (el=3) → went to …/checkout`, `type (el=2) "Tokyo" → the field didn't keep it — it may need choosing from a list`. Worked out at the top of the next step, once the page has landed: read straight after the action, a click's navigation hasn't committed and every one looks like "no change" |
+| **Links say where they go** | Elements render as `[3] link "Speakers" → /speakers`. A URL never has to be invented |
+| **A dead URL is refused** | The first attempt is reported; after that the action is rejected before it runs: *"…was already tried and had nothing on it. Use the page you're on."* |
+| **A goal whose evidence needs a dead page gives up** | Otherwise the run is trapped between a check it can't satisfy and a URL it's refused from visiting, which is exactly how the budget went |
+
+**Effect on the task that prompted it:** from guessing `/2027`, then `/2026`, and burning 40 steps and 242 s — to **navigating straight to `/speakers` on step 1, in six runs out of six**. Known tasks were unaffected: Eiffel 2/2 (0 steps, 35 s), python.org 2/2 (0 steps, 51 s), Everest 1/2, its one failure the old guessed-text-check issue.
+
+**One bug found by adding them.** The outcome was first computed before the slow-page wait, so a page that was merely still rendering got written off as dead — and the page written off was `/speakers`, the right one. The wait now runs before anything judges the page.
+
+**What it didn't fix.** The guessing moved up a level: the planner now writes a url check for `https://…/speakers/2026`, a path it invented, and the run chases that instead. We already drop planner url checks that spell out a *query string*; a made-up *path* is the same mistake one level up, and is still open. Nor does any run read a speaker's name — that page lists years, and nothing in the plan picks one.
+
 ## What the fixes do to the guarantees
 
 - **The mandate is unchanged.** Every request blocked before is still blocked and recorded. Only what the executor is *told* changed.

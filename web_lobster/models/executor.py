@@ -35,6 +35,12 @@ Rules:
 - Use "scroll" if the target element's badge is not visible in the screenshot
 - Use "wait" if the page is still loading
 - Never repeat the same (action + element_id) pair that already failed — try another element
+- READ THE HISTORY. Each past action is followed by "→ what it did". If a URL had
+  nothing on it or answered 404, that page does not exist: don't go back to it,
+  and don't try a near-miss of it. Work with the page you're on.
+- Don't invent URLs. Links show where they go, as "→ /speakers". Click the link
+  that leads where you want; only use "navigate" for a URL you were given or one
+  you can see on the page.
 - CRITICAL: Call "done" ONLY after you have personally taken at least one meaningful
   action (click, type, navigate, etc.) toward this sub-goal in this attempt AND the
   success criteria is now clearly met. Exception: call "done" immediately if the page
@@ -155,7 +161,7 @@ PAGE STATE:
 
 {page_context}
 
-ACTION HISTORY (recent):
+ACTION HISTORY (recent) — "→" is what the action actually did:
 {action_history_text}
 
 Choose your next action:"""

@@ -75,6 +75,7 @@ from web_lobster.tools.mcp_manager import MCPManager
 from web_lobster.memory.task_memory import TaskMemory, TaskRecord
 from web_lobster.mandate.enforcer import MandateEnforcer, MandateExpiredError, Violation
 from web_lobster.mandate.schema import Mandate
+from web_lobster.mandate.schema import url_matches
 from web_lobster.verify.evidence import EvidenceContext, ValueCheck, evaluate
 from web_lobster.verify.receipts import (
     MAX_RECEIPT_WRITES,
@@ -156,6 +157,10 @@ class Orchestrator:
         self._goal_violations_start = 0
         # Block signatures the executor has already been told about, once per run.
         self._reported_blocks: set[str] = set()
+        # URLs that led nowhere, so the executor isn't allowed to try them twice.
+        self._dead_urls: dict[str, str] = {}
+        # The action whose outcome is worked out on the next step.
+        self._pending_outcome: Optional[tuple[Action, str, bool]] = None
 
         # One receipt per finished sub-goal, chained so later edits are detectable
         self.receipts = ReceiptLog()
@@ -496,6 +501,8 @@ class Orchestrator:
     ) -> AgentResult:
         try:
             self._reported_blocks.clear()
+            self._dead_urls.clear()
+            self._pending_outcome = None
 
             # 1. Launch browser
             await self.browser.start(start_url)
@@ -679,6 +686,35 @@ class Orchestrator:
                     self._visited_origins.add(origin_of(observation.url))
                 await self._ui_emit("on_observation", observation)
 
+                # --- GIVE A SLOW PAGE ITS MOMENT ---
+                # Before anything judges this page: jaipurliteraturefestival.org
+                # renders nothing for three and a half seconds, and judging it
+                # early wrote the right page off as dead.
+                if dom_mode and _looks_empty(observation):
+                    observation = await self._wait_for_the_page(observation)
+                    self.state.current_observation = observation
+
+                # --- WHAT DID THE LAST ACTION DO? ---
+                # The executor used to see only what it had tried, never what came
+                # of it, so nothing stopped it making the same guess three times.
+                if self._pending_outcome:
+                    last, before_url, ok = self._pending_outcome
+                    last.outcome = await self._describe_outcome(last, before_url, ok, observation)
+                    self._pending_outcome = None
+
+                # --- A GOAL THAT CAN'T BE REACHED ---
+                # A planner invents a url check for a page that doesn't exist, and
+                # the executor is stuck between evidence it can't satisfy and a URL
+                # it's refused. End the attempt and say why, so the plan changes.
+                unreachable = self._unreachable_check(sub_goal)
+                if unreachable:
+                    logger.warning("evidence_url_is_dead", id=sub_goal.id, url=unreachable)
+                    reflections.append(
+                        f"This step can't be finished: its evidence needs {unreachable}, "
+                        f"and that page {self._dead_urls.get(unreachable.rstrip('/'), 'does not exist')}."
+                    )
+                    break
+
                 # --- A PAGE WITH NOTHING ON IT ---
                 # A guessed URL can land on a page with no elements and no text,
                 # and the executor then picks elements that aren't there for the
@@ -686,12 +722,6 @@ class Orchestrator:
                 # and if that isn't better, end the attempt so the plan can change.
                 # Only without a screenshot: a vision model can work a page that
                 # is all canvas or image, where there is nothing to read or click.
-                if dom_mode and _looks_empty(observation):
-                    # Slow before dead: jaipurliteraturefestival.org renders nothing
-                    # for three and a half seconds, and this check used to call it
-                    # dead at two, go back, and lose the page it wanted.
-                    observation = await self._wait_for_the_page(observation)
-                    self.state.current_observation = observation
                 if dom_mode and _looks_empty(observation):
                     logger.warning("empty_page", url=observation.url)
                     if went_back_from_nothing:
@@ -742,7 +772,9 @@ class Orchestrator:
                 action = await self.executor.decide(
                     observation=observation,
                     sub_goal=goal_view,
-                    action_history_text=self.state.action_history_summary(),
+                    # Long enough to still show a page that led nowhere: at five
+                    # lines, three refusals pushed the reason off the end.
+                    action_history_text=self.state.action_history_summary(n=10),
                     actions_taken_this_subgoal=action_count_this_attempt - 1,
                     reflection=combined_reflection,
                     mcp_tools=self.mcp.tools if self.mcp.has_tools else None,
@@ -798,6 +830,20 @@ class Orchestrator:
                                 reason=f"element_id {action.element_id} not on page (valid: {sorted(valid_ids)[:10]})",
                             )
                         )
+                        continue
+
+                # --- A URL THAT ALREADY LED NOWHERE ---
+                # Live, the executor navigated to a made-up /2027 page three
+                # times in one run. It gets told once; after that it's refused,
+                # so the budget goes on the page it actually has.
+                if action.action == ActionType.NAVIGATE and action.url:
+                    why = self._dead_urls.get(action.url.rstrip("/"))
+                    if why:
+                        logger.warning("dead_url_refused", url=action.url)
+                        self.state.action_history.append(Action(
+                            action=ActionType.WAIT,
+                            reason=f"{action.url} was already tried and {why}. Use the page you're on.",
+                        ))
                         continue
 
                 # --- NOTHING TO ENTER ---
@@ -865,6 +911,11 @@ class Orchestrator:
 
                 if not success:
                     logger.warning("action_execution_failed", action=action.action.value)
+
+                # What it did is worked out at the top of the next step, once the
+                # page has landed: read here, a click's navigation hasn't
+                # committed yet and every one of them looks like "no change".
+                self._pending_outcome = (action, observation.url, success)
 
                 # --- STUCK DETECTION with smarter tracking ---
                 self.stuck_detector.record(
@@ -1301,6 +1352,54 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "plan_issues": list(self._plan_issues),
         }
 
+    async def _describe_outcome(
+        self, action: Action, before_url: str, success: bool, now: Observation
+    ) -> str:
+        """One line on what an action did, for the executor's own history.
+
+        Only what code can see: where the page went, what it answered, and
+        whether there is anything on it. A navigation that led nowhere is
+        remembered, so the same guess can't be made twice.
+        """
+        if not success:
+            return "the browser couldn't do it"
+
+        url, status = now.url, self.browser.page_status
+        moved = url != before_url
+        if action.action in (ActionType.NAVIGATE, ActionType.CLICK, ActionType.GO_BACK):
+            if status is not None and status >= 400:
+                self._remember_dead(action, url, f"answered {status}")
+                return f"{url} answered {status}"
+            if _looks_empty(now):
+                self._remember_dead(action, url, "had nothing on it")
+                return f"went to {url}, which has nothing on it"
+            if not moved:
+                return "the page didn't change"
+            return f"went to {url}"
+
+        if action.action in (ActionType.TYPE, ActionType.SELECT) and action.text:
+            held = await self.browser.field_values()
+            entered = any(_normalise(action.text) in _normalise(value) for value in held)
+            if not entered:
+                return "the field didn't keep it — it may need choosing from a list"
+            return "the field holds it" + (f", and the page moved to {url}" if moved else "")
+
+        return f"the page moved to {url}" if moved else ""
+
+    def _unreachable_check(self, sub_goal: SubGoal) -> Optional[str]:
+        """A url check pointing at a page we've found doesn't exist, if any."""
+        for dead in self._dead_urls:
+            for check in sub_goal.evidence:
+                if check.type == "url" and url_matches(dead, check.pattern):
+                    return dead
+        return None
+
+    def _remember_dead(self, action: Action, landed: str, why: str) -> None:
+        """A URL that led nowhere, by what was asked for and where it ended up."""
+        for url in {action.url, landed}:
+            if url:
+                self._dead_urls[url.rstrip("/")] = why
+
     async def _wait_for_the_page(self, observation: Observation) -> Observation:
         """Re-observe an empty page while its requests are still in flight.
 
@@ -1373,6 +1472,8 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             parts.append(self._safe(act.url))
         if act.reason:
             parts.append(f"({self._safe(act.reason)})")
+        if act.outcome:
+            parts.append(f"→ {self._safe(act.outcome)}")
         return " ".join(parts)
 
     async def _request_confirmation(self, action: Action, reason: str) -> bool:
@@ -1386,6 +1487,10 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
         # No UI — auto-decline in safety-first mode
         logger.info("auto_declining_risky_action", reason=reason)
         return False
+
+
+def _normalise(text: str) -> str:
+    return " ".join(text.split()).casefold()
 
 
 def _looks_empty(observation: Observation) -> bool:
