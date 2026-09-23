@@ -9,7 +9,7 @@ import pytest
 
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.orchestrator import Orchestrator
-from web_lobster.models.ollama_backend import OllamaBackend
+from web_lobster.models.ollama_backend import ModelNotInstalled, OllamaBackend
 
 
 def _backend(handler) -> tuple[OllamaBackend, list[dict]]:
@@ -54,8 +54,37 @@ async def test_context_window_is_sent_as_num_ctx():
 
 
 async def test_other_errors_carry_the_server_message():
-    backend, _ = _backend(lambda body: httpx.Response(404, json={"error": "model 'nope' not found"}))
-    with pytest.raises(RuntimeError, match="404.*model 'nope' not found"):
+    backend, _ = _backend(lambda body: httpx.Response(500, json={"error": "out of memory"}))
+    with pytest.raises(RuntimeError, match="500.*out of memory"):
+        await backend.generate("hi")
+
+
+async def test_a_model_that_was_never_pulled_says_so_and_names_what_is_there():
+    """A dashboard run picked a 72B model nobody had pulled and died on a raw 404."""
+    def route(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "qwen2.5-coder:7b"}, {"name": "llama3:latest"}]})
+        return httpx.Response(404, json={"error": "model 'qwen2.5:72b' not found"})
+
+    backend = OllamaBackend(model="qwen2.5:72b")
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    with pytest.raises(ModelNotInstalled) as raised:
+        await backend.generate("hi")
+    message = str(raised.value)
+    assert "hasn't pulled 'qwen2.5:72b'" in message
+    assert "llama3:latest, qwen2.5-coder:7b" in message      # what this machine has, in order
+    assert "ollama pull qwen2.5:72b" in message              # and how to fix it
+
+
+async def test_an_ollama_that_is_not_running_says_that_instead():
+    def route(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            raise httpx.ConnectError("connection refused")
+        return httpx.Response(404, json={"error": "model 'x' not found"})
+
+    backend = OllamaBackend(model="x")
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(route))
+    with pytest.raises(ModelNotInstalled, match="isn't answering"):
         await backend.generate("hi")
 
 
@@ -64,3 +93,18 @@ def test_validator_vision_follows_config():
     config.validator.vision = False
     assert Orchestrator(config).validator.use_vision is False
     assert Orchestrator(WebLobsterConfig()).validator.use_vision is True
+
+
+def test_the_dashboard_offers_the_models_this_machine_has(monkeypatch):
+    """It offered a 72B model nobody had pulled, and the run died once the
+    browser was already open."""
+    from fastapi.testclient import TestClient
+
+    from web_lobster.ui.server import app
+
+    async def installed(self):
+        return ["qwen2.5-coder:7b"]
+
+    monkeypatch.setattr(OllamaBackend, "installed_models", installed)
+    assert TestClient(app).get("/api/models/installed").json() == {"models": ["qwen2.5-coder:7b"]}
+

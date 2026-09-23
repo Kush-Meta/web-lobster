@@ -129,6 +129,7 @@ Run records now keep the executor's action trail, redacted — every action, and
 
 ### Two that weren't about the web at all
 
+- **The dashboard offered a model nobody had pulled.** Its model list was hardcoded, and the default config still named `qwen2.5:72b` — which no 16 GB Mac can run. A run picked it, and Ollama's 404 surfaced only after the brief, after the browser opened, and after two retries, as `Ollama returned 404 for qwen2.5:72b`. Now the list is filled from the machine's own Ollama, presets whose models aren't pulled are dimmed and labelled, and a 404 from Ollama becomes: *"Ollama hasn't pulled 'qwen2.5:72b'. It has: … Run `ollama pull qwen2.5:72b`, or choose one of those."* It isn't retried, and no browser opens.
 - **`-c configs/local-16gb.yaml` silently switched to Claude** once `ANTHROPIC_API_KEY` was set. A config passed with `-c` is now used as written.
 - **qwen2.5-coder:7b rejects images with HTTP 400.** `vision: false` per role, and the Ollama backend retries once without images and remembers the model is text only. Ollama's default context also cut pages short, hence `context_window`.
 

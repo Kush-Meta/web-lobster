@@ -36,7 +36,7 @@ The goal is a web agent you can hand a logged-in browser and a goal, knowing it 
 - **Write content.** Write rules scope endpoints, not what's sent to them, so a planted instruction can misuse an allowed endpoint (`allowed-write-abuse`). Evidence refuses to call the wrong result done, but can't undo it. Next: value-bound write rules — a rebooking date that must match a typed value from the task.
 - **Live models, unmeasured.** Measurements are a handful of runs on one local 7B model. The benchmark's live mode hasn't run, so how often a real model falls for a planted instruction is still unknown. Claude configs have never been run live.
 - **Staying signed in.** Every task starts with a fresh browser profile, so no session carries over between runs. Signing in *inside* a run works. Persistent profiles are designed ([design](design/step-8-signed-in-tasks.md)) but not built.
-- **Dashboard.** The web dashboard asks the planner's questions, but doesn't accept mandates or notes, or show receipts.
+- **Dashboard.** The web dashboard asks the planner's questions, but doesn't accept mandates or notes, or show receipts. Its default config still names a 72B model, which no 16 GB machine can run — the model list and presets now reflect what's actually installed, but the defaults should too.
 - **Cross-origin reads.** Data the agent never typed (page text, cookies) can still leave through cross-origin GETs that pages need in order to load.
 
 ## Next

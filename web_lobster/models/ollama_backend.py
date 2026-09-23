@@ -16,6 +16,10 @@ from web_lobster.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+class ModelNotInstalled(RuntimeError):
+    """The model this run needs hasn't been pulled. Retrying won't help."""
+
+
 class OllamaBackend(ModelBackend):
     """Client for the Ollama REST API."""
 
@@ -91,6 +95,8 @@ class OllamaBackend(ModelBackend):
             self._text_only = True
             user_message.pop("images")
             response = await client.post(f"{self.base_url}/api/chat", json=payload)
+        if response.status_code == 404 and "not found" in response.text:
+            raise ModelNotInstalled(await self._missing_model_message())
         if response.is_error:
             raise RuntimeError(f"Ollama returned {response.status_code} for {self.model}: {response.text[:200]}")
         data = response.json()
@@ -103,6 +109,33 @@ class OllamaBackend(ModelBackend):
             eval_duration_ms=data.get("eval_duration", 0) / 1_000_000,
         )
         return content
+
+    async def _missing_model_message(self) -> str:
+        """What to tell someone whose model isn't there.
+
+        Ollama answers a request for a model it hasn't pulled with a 404, and
+        that used to surface as a raw error after the brief, the browser, and
+        two retries. The dashboard offers models nobody has pulled, so this is
+        easy to hit; naming the ones that are here is most of the fix.
+        """
+        installed = await self.installed_models()
+        if not installed:
+            return f"Ollama isn't answering at {self.base_url}. Is it running?"
+        return (
+            f"Ollama hasn't pulled {self.model!r}. It has: {', '.join(installed)}. "
+            f"Run `ollama pull {self.model}`, or choose one of those."
+        )
+
+    async def installed_models(self) -> list[str]:
+        """Every model this Ollama has pulled, or [] if it can't be reached."""
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"{self.base_url}/api/tags")
+            if resp.status_code != 200:
+                return []
+            return sorted(model["name"] for model in resp.json().get("models", []))
+        except Exception:
+            return []
 
     async def is_available(self) -> bool:
         try:

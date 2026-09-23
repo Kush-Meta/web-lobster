@@ -114,6 +114,22 @@ async def get_model_presets():
     return MODEL_PRESETS
 
 
+@app.get("/api/models/installed")
+async def get_installed_models():
+    """Ollama models on this machine, so the dashboard can't offer what isn't here.
+
+    A dashboard run picked qwen2.5:72b from a hardcoded list and died on a 404
+    after the browser had already opened.
+    """
+    from web_lobster.models.ollama_backend import OllamaBackend
+
+    backend = OllamaBackend(model="", base_url=shared.config.executor.base_url)
+    try:
+        return {"models": await backend.installed_models()}
+    finally:
+        await backend.close()
+
+
 # ── REST: Agent Control ───────────────────────────────────
 
 class TaskRequest(BaseModel):

@@ -615,16 +615,11 @@ button{cursor:pointer}
           <input id="dValidatorModel" list="dModelList" placeholder="model name">
         </div></div>
       </div>
+      <!-- Filled from this machine's Ollama at load; these are the fallback. -->
       <datalist id="dModelList">
         <option value="claude-haiku-4-5-20251001">
         <option value="claude-sonnet-4-6">
         <option value="claude-opus-4-6">
-        <option value="qwen2.5:7b">
-        <option value="qwen2.5:14b">
-        <option value="qwen2.5:72b">
-        <option value="llama3.2:3b">
-        <option value="llama3.1:8b">
-        <option value="minicpm-v:8b">
       </datalist>
 
       <!-- Anthropic API key (shown only when anthropic selected) -->
@@ -972,12 +967,26 @@ function syncState(data){
 
 // ── Presets ──────────────────────────────────
 const ICONS={search:'🔍',plane:'✈️',scale:'⚖️',briefcase:'💼',book:'📖',edit:'✏️',tag:'🏷️',terminal:'🖥️',zap:'⚡',sliders:'🎛️',feather:'🪶',cpu:'💻',layers:'📚',shield:'🛡️',sparkle:'✦'};
+let installedModels=[];
 async function loadPresets(){
   try{
-    const [t,m]=await Promise.all([fetch('/api/presets/tasks'),fetch('/api/presets/models')]);
+    const [t,m,i]=await Promise.all([fetch('/api/presets/tasks'),fetch('/api/presets/models'),fetch('/api/models/installed')]);
     taskPresets=await t.json(); modelPresets=await m.json();
-  }catch{taskPresets=[];modelPresets=[];}
-  renderPresets(); renderModelPills();
+    installedModels=(await i.json()).models||[];
+  }catch{taskPresets=[];modelPresets=[];installedModels=[];}
+  renderModelList(); renderPresets(); renderModelPills();
+}
+// The list offered a 72B model nobody had pulled, and the run died on a 404
+// once the browser was already open. Offer what this machine actually has.
+function renderModelList(){
+  if(!installedModels.length) return;
+  const cloud=['claude-haiku-4-5-20251001','claude-sonnet-4-6','claude-opus-4-6'];
+  $('dModelList').innerHTML=[...installedModels,...cloud].map(m=>`<option value="${m}">`).join('');
+}
+function presetIsInstalled(p){
+  if(p.planner?.backend!=='ollama') return true;        // cloud models need a key, not a pull
+  if(!installedModels.length) return true;              // Ollama unreachable: don't guess
+  return [p.planner,p.executor,p.validator].every(r=>!r?.model||installedModels.includes(r.model)||installedModels.includes(r.model+':latest'));
 }
 function renderPresets(){
   $('presetGrid').innerHTML=taskPresets.map(p=>`
@@ -990,13 +999,15 @@ function renderPresets(){
 function renderModelPills(){
   $('modelPresetPills').innerHTML=modelPresets.map(p=>{
     const isCloud=p.planner?.backend==='anthropic';
+    const here=presetIsInstalled(p);
     const color=isCloud?'var(--claude)':'var(--green)';
     const icon=isCloud?'☁ ':'⬡ ';
-    return`<div onclick="applyModelPreset('${p.id}')" title="${p.description||''}"
-      style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;cursor:pointer;color:var(--t1);transition:all 0.15s;white-space:nowrap"
+    const title=here?(p.description||''):`Not installed. Needs: ${[p.planner,p.executor,p.validator].map(r=>r?.model).filter(Boolean).join(', ')}`;
+    return`<div onclick="applyModelPreset('${p.id}')" title="${title}"
+      style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;cursor:pointer;color:var(--t1);transition:all 0.15s;white-space:nowrap;opacity:${here?1:0.45}"
       onmouseenter="this.style.borderColor='${color}';this.style.color='${color}'"
       onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--t1)'"
-    >${icon}${p.name}</div>`;
+    >${icon}${p.name}${here?'':' · not pulled'}</div>`;
   }).join('');
 }
 function applyModelPreset(id){

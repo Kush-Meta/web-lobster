@@ -26,6 +26,7 @@ async def retry_async(
     max_delay: float = 30.0,
     backoff_factor: float = 2.0,
     exceptions: tuple = (Exception,),
+    do_not_retry: tuple = (),
     **kwargs,
 ) -> Any:
     """Retry an async function with exponential backoff.
@@ -37,6 +38,8 @@ async def retry_async(
         max_delay: Maximum delay between retries
         backoff_factor: Multiplier for delay on each retry
         exceptions: Tuple of exception types to catch
+        do_not_retry: Exception types to raise straight away — a failure that
+            repeating can't fix, such as a model that hasn't been pulled
 
     Returns:
         The function's return value on success
@@ -50,6 +53,8 @@ async def retry_async(
     for attempt in range(1, max_retries + 1):
         try:
             return await fn(*args, **kwargs)
+        except do_not_retry:
+            raise
         except exceptions as e:
             last_exception = e
             if attempt == max_retries:

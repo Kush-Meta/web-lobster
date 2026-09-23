@@ -66,7 +66,7 @@ from web_lobster.models.planner import Planner, reads_only
 from web_lobster.models.executor import Executor
 from web_lobster.models.validator import Validator
 from web_lobster.models.extractor import PAGE_TEXT_LIMIT, Extractor
-from web_lobster.models.ollama_backend import OllamaBackend
+from web_lobster.models.ollama_backend import ModelNotInstalled, OllamaBackend
 from web_lobster.models.llamacpp_backend import LlamaCppBackend
 from web_lobster.models.anthropic_backend import AnthropicBackend
 from web_lobster.browser.controller import BrowserController
@@ -256,15 +256,23 @@ class Orchestrator:
         """
         logger.info("task_start", task=task)
         start_time = time.time()
+
         memory_context, memory_hits = self.recall(task, start_url)
 
         await self._ui_emit("on_task_start", task, memory_hits=memory_hits)
 
         # Think first. This runs before the time limit starts: a person may be answering.
-        briefing = await self.think(
-            task, start_url, notes=notes, requested_values=requested_values,
-            brief=brief, answers=answers, memory_context=memory_context,
-        )
+        try:
+            briefing = await self.think(
+                task, start_url, notes=notes, requested_values=requested_values,
+                brief=brief, answers=answers, memory_context=memory_context,
+            )
+        except ModelNotInstalled as e:
+            # Nothing else will work, and no browser has opened yet. Say it once.
+            logger.error("model_not_installed", detail=str(e))
+            await self._ui_emit("on_error", str(e))
+            return AgentResult(success=False, task=task, error=str(e),
+                               elapsed_seconds=time.time() - start_time)
         if briefing.needs_input or briefing.declined:
             return self._stopped_before_start(task, start_time, briefing)
         context = briefing.context
@@ -333,6 +341,8 @@ class Orchestrator:
         if brief is None and self.config.agent.briefing and hasattr(self.planner, "brief"):
             try:
                 brief = await self.planner.brief(task, context.render(), start_url)
+            except ModelNotInstalled:
+                raise  # nothing here will work; say so once, at the top
             except Exception as e:
                 logger.warning("brief_failed", error=str(e)[:160])
         context.brief = brief
@@ -506,6 +516,8 @@ class Orchestrator:
                 start_url,
                 max_retries=2,
                 base_delay=2.0,
+                # A model that isn't installed won't install itself between tries.
+                do_not_retry=(ModelNotInstalled,),
             )
             plan = await self._review_plan(plan, context, start_url)
             self.state.plan = plan
