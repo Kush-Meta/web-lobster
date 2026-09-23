@@ -18,7 +18,8 @@ from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.core.schemas import Action, ActionType, SubGoal, TaskPlan, ValidationResult
 from web_lobster.mandate.schema import Mandate
 from web_lobster.memory.task_memory import TaskMemory
-from web_lobster.verify.evidence import RequestCheck, TextCheck, UrlCheck
+from web_lobster.core.values import ExtractedValue, ValueSpec, ValueType
+from web_lobster.verify.evidence import RequestCheck, TextCheck, UrlCheck, ValueCheck
 from web_lobster.verify.receipts import verify_chain
 
 TASK = "Book the trip"
@@ -243,6 +244,22 @@ async def test_typing_with_nothing_to_type_is_refused(sites, tmp_path):
     assert result.receipts[0].checks[0].detail == "found in a field on the page"
 
 
+async def test_a_slow_page_is_waited_for_not_abandoned(sites, tmp_path):
+    a, _ = sites
+    # A live run called jaipurliteraturefestival.org dead after two seconds and
+    # went back; the page renders at three and a half.
+    goal = SubGoal(id=1, goal="Read the speakers", success_criteria="Speakers are listed",
+                   evidence=[TextCheck(contains="Speakers")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="read"))
+
+    result = await orchestrator.run("Read the speakers", start_url=f"{a.origin}/slow")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    assert not any("go_back" in line for line in result.actions)  # it waited instead
+
+
 async def test_a_page_with_nothing_on_it_ends_the_attempt(sites, tmp_path):
     a, _ = sites
     # Live run 28 landed on an empty page and spent 35 of its 40 steps choosing
@@ -261,6 +278,31 @@ async def test_a_page_with_nothing_on_it_ends_the_attempt(sites, tmp_path):
     # Well short of max_actions_per_subgoal (30) for even one attempt.
     assert result.steps_taken < 10, result.actions
     assert any("go_back" in line for line in result.actions)
+    orchestrator.executor.decide.assert_not_called()
+
+
+async def test_a_value_check_does_not_block_the_already_there_path(sites, tmp_path):
+    a, _ = sites
+    # The step that reads proves it read — but the reading happens in _verify, a
+    # moment after this check. Waiting for it here cost the Eiffel task its
+    # 0-step path: 7 steps to reach a page the browser had started on.
+    goal = SubGoal(
+        id=1, goal="Open the checkout page", success_criteria="Checkout is visible",
+        evidence=[UrlCheck(pattern=f"{a.origin}/checkout*"),
+                  ValueCheck(name="reference", op="!=", value=None)],
+        extract=[ValueSpec(name="reference", type=ValueType.TEXT)],
+    )
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.DONE, reason="done"))
+    orchestrator.extractor.extract = AsyncMock(return_value={
+        "reference": ExtractedValue(name="reference", type=ValueType.TEXT, value="ABC123", origin=a.origin),
+    })
+
+    result = await orchestrator.run("Open checkout", start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    assert result.success, result.error
+    assert result.steps_taken == 0
     orchestrator.executor.decide.assert_not_called()
 
 

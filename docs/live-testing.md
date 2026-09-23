@@ -10,9 +10,9 @@ The latest measured run of each task, fresh memory, `configs/local-16gb.yaml` (q
 
 | Task | Done | Right | Verified | Median steps | Median time |
 |---|---|---|---|---|---|
-| Eiffel Tower height, starting on the article | 1/1 | 1/1 | 1/1 | 0 | 45 s |
-| Latest Python 3 release, starting on the downloads page | 1/1 | 1/1 | 1/1 | 3 | 108 s |
-| Mount Everest's elevation, from Wikipedia's main page through its search box | 1/1 | 1/1 | 1/1 | 8 | 134 s |
+| Eiffel Tower height, starting on the article | 2/2 | 2/2 | 2/2 | 0 | 34 s |
+| Latest Python 3 release, starting on the downloads page | 2/2 | 2/2 | 2/2 | 1.5 | 55 s |
+| Mount Everest's elevation, from Wikipedia's main page through its search box | 2/2 | 2/2 | 2/2 | 4 | 71 s |
 | Sign in to a practice site and read a product price | 3/3 | 3/3 | 3/3 | 14 | 63 s |
 | Newest commit on a GitHub commits page | 3/3 | 3/3 | 3/3 | 2 | 95 s |
 | Cheapest New York → Tokyo flight on Google Flights | 0/2 | — | 0/2 | 40 | 537 s |
@@ -132,6 +132,36 @@ Run records now keep the executor's action trail, redacted — every action, and
 - **The dashboard offered a model nobody had pulled.** Its model list was hardcoded, and the default config still named `qwen2.5:72b` — which no 16 GB Mac can run. A run picked it, and Ollama's 404 surfaced only after the brief, after the browser opened, and after two retries, as `Ollama returned 404 for qwen2.5:72b`. Now the list is filled from the machine's own Ollama, presets whose models aren't pulled are dimmed and labelled, and a 404 from Ollama becomes: *"Ollama hasn't pulled 'qwen2.5:72b'. It has: … Run `ollama pull qwen2.5:72b`, or choose one of those."* It isn't retried, and no browser opens. The defaults changed too: the dashboard now starts on the same one-model stack the README tells you to pull and the live tests use, and there's a preset that says so.
 - **`-c configs/local-16gb.yaml` silently switched to Claude** once `ANTHROPIC_API_KEY` was set. A config passed with `-c` is now used as written.
 - **qwen2.5-coder:7b rejects images with HTTP 400.** `vision: false` per role, and the Ollama backend retries once without images and remembers the model is text only. Ollama's default context also cut pages short, hence `context_window`.
+
+### Three found by someone just trying it (2026-09-22)
+
+A task typed into the dashboard — "find the speakers at the Jaipur Literature Festival 2027" — turned up three bugs in one run, two of them ours from the days before.
+
+**A slow page was being called dead.** The empty-page rule added two days earlier fired on `jaipurliteraturefestival.org`, went back, and lost the page it wanted. The site isn't empty; it renders nothing for three and a half seconds:
+
+```
+t+ 2.6s  elements=  0  text=    0
+t+ 3.6s  elements=  1  text=  385
+t+ 5.6s  elements=  5  text= 2999
+```
+
+An empty observation is now waited on — re-observed every half second up to `agent.evidence_wait_seconds` — before the page counts as dead. Not until the network goes quiet, which was the first attempt: plenty of pages render from a timer with nothing in flight, and the local test site proved it. In the rerun `page_arrived_late` fired five times and `empty_page` never.
+
+**A replan that came back unusable ended the run.** The planner returned sub-goals with no goal text, code dropped them (rightly), and the run stopped. First planning is retried twice; replanning wasn't. Now it is.
+
+**And the expensive one: `{{$value}} was read` was blocking the already-there path.** A sub-goal whose url check already passes is counted done before any action — except that all of its checks have to pass, and a value check can't until the value is read, which happens a moment later in the same verify. So the day reading steps started proving they had read, every task that started on its answer page lost its zero-step path. `_already_there` now ignores value checks.
+
+| Task | Blocked by the value check | After |
+|---|---|---|
+| eiffel | 7 steps, 107 s | **0 steps, 34 s** |
+| python-latest | 3 steps, 88 s | **1.5 steps, 55 s** |
+| everest | 12–16 steps, 233–312 s | **4 steps, 71 s** |
+
+All six runs right and verified — the best numbers the three tasks have had. The regression had been sitting in two commits, passing every test, because nothing in the suite checked *how many steps* a task that starts on its answer takes.
+
+**The task itself was unanswerable, and the run said so.** The festival's speakers page offers 2026, 2025, 2024, 2023 and 2022 — there is no 2027. The run reported "The page does not provide information about speakers at the Jaipur Literature Festival 2027", with **0 sub-goals verified**. It didn't invent a list. That is the right outcome, and the opposite of run 29, where a plausible wrong answer came back verified.
+
+One thing it did badly: after failing, it replanned into eight sub-goals, several of them paragraphs of instructions — "Navigate to the … website and locate the section for the 2027 festival. Click on the link to go to the 2027 festival page." Those can't be judged done or not. Plan review now flags a sub-goal that runs past 25 words or more than one sentence.
 
 ## What the fixes do to the guarantees
 

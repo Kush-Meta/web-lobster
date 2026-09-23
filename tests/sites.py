@@ -52,6 +52,13 @@ def build_sites() -> tuple[Site, Site]:
         "/login.html": (404, {"Content-Type": "text/html"}, "<html><body><h1>Not found</h1></body></html>"),
         # And what it gets on a single-page app: a 200 with nothing rendered.
         "/nothing": html(""),
+        # A page that renders nothing for a moment, the way a heavy site does:
+        # jaipurliteraturefestival.org has no elements at all for 3.5 seconds.
+        "/slow": html(
+            '<script>setTimeout(() => {'
+            '  document.body.innerHTML = "<p>Speakers</p><a href=\'/checkout\'>Go to checkout</a>";'
+            '}, 1200);</script>'
+        ),
         # A Google-Flights-style date box: typing opens a dialog, and the field
         # keeps nothing until the dialog's Done is pressed.
         "/datebox": html(

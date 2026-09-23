@@ -192,6 +192,20 @@ class TestPlanReview:
         assert 'give it a "request" evidence check' in issues[3]
         assert "grants no data called phone" in issues[4]
 
+    def test_a_paragraph_of_instructions_is_not_a_goal(self):
+        # A 7B planner under pressure starts writing the executor a letter.
+        # Live, a failed run replanned into eight of these and finished none.
+        plan = TaskPlan(task="t", sub_goals=[
+            SubGoal(id=1, goal=(
+                "Navigate to the Jaipur Literature Festival website and locate the section "
+                "for the 2027 festival. Click on the link to go to the 2027 festival page."
+            ), success_criteria="On the page"),
+            SubGoal(id=2, goal="Open the speakers page", success_criteria="Speakers are listed"),
+        ])
+        issues = review_plan(plan, None, max_sub_goals=6)
+        assert len(issues) == 1
+        assert issues[0].startswith("Sub-goal 1") and "paragraph of instructions" in issues[0]
+
     def test_click_level_steps_are_flagged_for_merging(self):
         plan = TaskPlan(task="t", sub_goals=[
             SubGoal(id=1, goal="Type 'Mount Everest' into the search box", success_criteria="Typed"),

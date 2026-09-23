@@ -445,6 +445,17 @@ def _url_pattern_allowed(pattern: str, mandate: Mandate) -> bool:
     return False
 
 
+def _reads_like_prose(goal: str) -> bool:
+    """Whether a sub-goal is a paragraph of instructions rather than a goal.
+
+    A 7B planner under pressure starts writing the executor a letter: "Navigate
+    to the website and locate the section for the 2027 festival. Click on the
+    link to go to the 2027 festival page." Those can't be judged done or not.
+    """
+    sentences = [part for part in re.split(r"[.!?](?:\s|$)", goal) if part.strip()]
+    return len(goal.split()) > 25 or len(sentences) > 1
+
+
 def review_plan(plan: TaskPlan, mandate: Optional[Mandate], max_sub_goals: int) -> list[str]:
     """Problems code can see in a plan, worded for the planner to fix.
 
@@ -474,6 +485,12 @@ def review_plan(plan: TaskPlan, mandate: Optional[Mandate], max_sub_goals: int) 
                     f"{label} types {{{{{name}}}}}, but the mandate grants no data called {name}, "
                     "so the browser can't fill it in."
                 )
+
+        if _reads_like_prose(goal.goal):
+            issues.append(
+                f"{label} is a paragraph of instructions, not a goal. Say what the page "
+                "should show when the step is done, in one short line."
+            )
 
         if len(goals) > 1 and is_click_level(goal.goal):
             issues.append(

@@ -686,7 +686,13 @@ class Orchestrator:
                 # and if that isn't better, end the attempt so the plan can change.
                 # Only without a screenshot: a vision model can work a page that
                 # is all canvas or image, where there is nothing to read or click.
-                if dom_mode and not observation.elements and not (observation.page_text or "").strip():
+                if dom_mode and _looks_empty(observation):
+                    # Slow before dead: jaipurliteraturefestival.org renders nothing
+                    # for three and a half seconds, and this check used to call it
+                    # dead at two, go back, and lose the page it wanted.
+                    observation = await self._wait_for_the_page(observation)
+                    self.state.current_observation = observation
+                if dom_mode and _looks_empty(observation):
                     logger.warning("empty_page", url=observation.url)
                     if went_back_from_nothing:
                         reflections.append(
@@ -910,11 +916,15 @@ class Orchestrator:
         Only evidence pinned to a page by a url check counts, and never a request
         check: a write has to happen during its sub-goal.
         """
-        checks = sub_goal.evidence
+        checks = [check for check in sub_goal.evidence if check.type != "value"]
         if not any(check.type == "url" for check in checks) or any(
-            check.type == "request" for check in checks
+            check.type == "request" for check in sub_goal.evidence
         ):
             return False
+        # Value checks are left out because _verify reads the values a moment
+        # later: waiting for one here means a page the browser is already on
+        # can never be "already there", which cost the Eiffel task its 0-step
+        # path the day a reading step started proving it had read.
         context = EvidenceContext(
             page_url=self.browser.current_url,
             page_text=await self.browser.page_text(),
@@ -1182,7 +1192,10 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
         try:
             # Only trusted facts go to the planner: its own sub-goals, counts, the
             # current origin, and type-checked values. Never page text or URLs.
-            new_goals = await self.planner.replan(
+            # Retried like first planning: a 7B planner returns sub-goals with no
+            # goal text often enough that one bad reply shouldn't end the run.
+            new_goals = await retry_async(
+                self.planner.replan,
                 task=self.state.plan.task,
                 completed_goals=completed,
                 failed_goal=failed_goal,
@@ -1190,6 +1203,9 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
                 failure=self._describe_failure(failed_goal),
                 values=list(self.state.values.values()),
                 context=self.context.render(include_memory=False) if self.context else None,
+                max_retries=2,
+                base_delay=1.0,
+                do_not_retry=(ModelNotInstalled,),
             )
 
             if not new_goals:
@@ -1285,6 +1301,27 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "plan_issues": list(self._plan_issues),
         }
 
+    async def _wait_for_the_page(self, observation: Observation) -> Observation:
+        """Re-observe an empty page while its requests are still in flight.
+
+        The same patience evidence checks get: waiting can't invent elements,
+        it can only let a page that was still rendering finish. Bounded by
+        agent.evidence_wait_seconds, and only ever paid on a page that looks
+        empty. A quiet network doesn't mean the page is done — plenty of pages
+        render from a timer or hydrate with no request in flight.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.agent.evidence_wait_seconds
+        while loop.time() < deadline:
+            await asyncio.sleep(0.5)
+            fresh = await self.browser.observer.observe(include_screenshot=False, extract_dom=True)
+            if self.enforcer:
+                fresh = self.enforcer.redact_observation(fresh)
+            if not _looks_empty(fresh):
+                logger.info("page_arrived_late", url=fresh.url, elements=len(fresh.elements))
+                return fresh
+        return observation
+
     async def _cheap_checks(self, sub_goal: SubGoal) -> Optional[dict[str, bool]]:
         """How a sub-goal's code-checkable evidence stands, without a model call.
 
@@ -1349,6 +1386,11 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
         # No UI — auto-decline in safety-first mode
         logger.info("auto_declining_risky_action", reason=reason)
         return False
+
+
+def _looks_empty(observation: Observation) -> bool:
+    """Nothing to click and nothing to read: not a page an executor can work."""
+    return not observation.elements and not (observation.page_text or "").strip()
 
 
 class AgentResult:
