@@ -1,41 +1,55 @@
 # Web Lobster — Default Configuration
 # Copy this file and customize for your setup.
 #
-# Model sizes and your available VRAM will determine which models to use.
-# The defaults below assume ~16GB+ VRAM. For less, use smaller models.
+# One small text model for every role, so only one sits in memory at a time.
+# This is the stack the README tells you to pull and every live test uses:
+#
+#   ollama pull qwen2.5-coder:7b
+#
+# Bigger machines: see the model options on each role below. A 70B-class
+# planner wants ~48 GB, and mixing sizes makes Ollama swap models between
+# calls, which costs a minute or two per task on a 16 GB machine.
 
 # ── Planner ─────────────────────────────────────────────
 # Large model for task decomposition. Called once per task.
 # Prioritize reasoning quality over speed.
 planner:
   backend: ollama
-  model: "qwen2.5:72b"        # Options: qwen2.5:72b, llama3.1:70b, deepseek-v2:16b
+  model: "qwen2.5-coder:7b"   # Bigger: qwen2.5-coder:14b (~9 GB), qwen2.5:72b (~48 GB)
   base_url: "http://localhost:11434"
   temperature: 0.2
-  max_tokens: 4096
+  max_tokens: 2048
   timeout: 180.0
+  vision: false               # a text-only model is never sent screenshots
+  context_window: 16384       # Ollama's default is too small for most web pages
 
 # ── Executor ────────────────────────────────────────────
 # Small/fast model for single-action decisions. Called every step.
 # Prioritize speed and output reliability.
 executor:
   backend: ollama              # Use "llamacpp" for grammar-constrained output
-  model: "qwen2.5:7b"         # Options: qwen2.5:7b, phi3:mini, llama3.2:3b
+  model: "qwen2.5-coder:7b"   # Smaller: llama3.2:3b, phi3:mini
   base_url: "http://localhost:11434"
   temperature: 0.0             # Deterministic for reproducibility
   max_tokens: 256
-  timeout: 30.0
+  timeout: 120.0
+  vision: false
+  context_window: 16384
   # grammar_path: null         # Set to GGUF path if using llamacpp backend
 
 # ── Validator ───────────────────────────────────────────
-# Vision model for verifying sub-goal completion via screenshots.
+# Judges a sub-goal only when it has no evidence checks code can run.
+# A vision model (minicpm-v:8b, llava:13b, qwen2-vl:7b) reads screenshots
+# instead; set vision: true with one of those.
 validator:
   backend: ollama
-  model: "minicpm-v:8b"       # Options: minicpm-v:8b, llava:13b, qwen2-vl:7b
+  model: "qwen2.5-coder:7b"
   base_url: "http://localhost:11434"
   temperature: 0.1
-  max_tokens: 512
-  timeout: 60.0
+  max_tokens: 256
+  timeout: 120.0
+  vision: false
+  context_window: 16384
 
 # ── Browser ─────────────────────────────────────────────
 browser:
@@ -74,5 +88,6 @@ agent:
   max_replans: 3               # Re-planning attempts before giving up
   validation_confidence_threshold: 0.7
   action_retry_limit: 2
-  screenshot_mode: "hybrid"    # "hybrid", "screenshot_only", "dom_only"
+  screenshot_mode: "dom_only"  # "hybrid", "screenshot_only", "dom_only"
+  dom_mode: true               # text models read the page's elements, not pictures of them
   max_seconds: 600             # Wall-clock timeout in seconds (0 = no limit)

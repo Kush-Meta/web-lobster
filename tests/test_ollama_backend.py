@@ -90,9 +90,10 @@ async def test_an_ollama_that_is_not_running_says_that_instead():
 
 def test_validator_vision_follows_config():
     config = WebLobsterConfig()
-    config.validator.vision = False
+    assert config.validator.vision is False          # the default stack is text-only
     assert Orchestrator(config).validator.use_vision is False
-    assert Orchestrator(WebLobsterConfig()).validator.use_vision is True
+    config.validator.vision = True
+    assert Orchestrator(config).validator.use_vision is True
 
 
 def test_the_dashboard_offers_the_models_this_machine_has(monkeypatch):

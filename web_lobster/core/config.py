@@ -66,8 +66,10 @@ class AgentConfig(BaseModel):
     max_replans: int = 3
     validation_confidence_threshold: float = 0.7
     action_retry_limit: int = 2
-    screenshot_mode: str = "hybrid"  # "hybrid", "screenshot_only", "dom_only"
-    dom_mode: bool = False           # extract rich DOM instead of / alongside screenshot
+    # The default models are text-only, so pages reach them as elements rather
+    # than pictures. A vision stack wants "hybrid" and dom_mode off.
+    screenshot_mode: str = "dom_only"  # "hybrid", "screenshot_only", "dom_only"
+    dom_mode: bool = True              # extract rich DOM instead of / alongside screenshot
     max_seconds: int = 600           # wall-clock timeout; 0 = no limit
     evidence_wait_seconds: float = 5.0  # max time to re-check evidence while requests are in flight
     # Thinking before acting (core/briefing.py)
@@ -80,21 +82,34 @@ class AgentConfig(BaseModel):
 
 
 class WebLobsterConfig(BaseModel):
-    """Top-level configuration."""
+    """Top-level configuration.
+
+    The defaults are the stack the README tells you to pull and every live test
+    uses: one small text model for all three roles, so only one model sits in
+    memory at a time. They used to name a 72B planner and a vision validator
+    that nobody had installed, and a dashboard run died on Ollama's 404 after
+    the browser had already opened. Bigger stacks live in `configs/`.
+    """
     planner: ModelConfig = Field(default_factory=lambda: ModelConfig(
-        model="qwen2.5:72b",
+        model="qwen2.5-coder:7b",
         temperature=0.2,
-        max_tokens=4096,
+        max_tokens=2048,
+        vision=False,
+        context_window=16384,
     ))
     executor: ModelConfig = Field(default_factory=lambda: ModelConfig(
-        model="qwen2.5:7b",
+        model="qwen2.5-coder:7b",
         temperature=0.0,
-        max_tokens=512,
+        max_tokens=256,
+        vision=False,
+        context_window=16384,
     ))
     validator: ModelConfig = Field(default_factory=lambda: ModelConfig(
-        model="minicpm-v:8b",
+        model="qwen2.5-coder:7b",
         temperature=0.1,
-        max_tokens=512,
+        max_tokens=256,
+        vision=False,
+        context_window=16384,
     ))
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)

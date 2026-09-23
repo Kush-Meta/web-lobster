@@ -120,6 +120,17 @@ MODEL_PRESETS = [
         "validator": {"model": "claude-haiku-4-5-20251001", "backend": "anthropic"},
     },
     {
+        # The stack the README tells you to pull and every live test uses. One
+        # small text model for all three roles, so only one sits in memory.
+        "id": "local_16gb",
+        "name": "Local 7B (tested)",
+        "description": "qwen2.5-coder:7b for every role. One model in memory, ~16 GB. This is what the live tests run on.",
+        "icon": "feather",
+        "planner": {"model": "qwen2.5-coder:7b", "backend": "ollama", "vision": False, "context_window": 16384},
+        "executor": {"model": "qwen2.5-coder:7b", "backend": "ollama", "vision": False, "context_window": 16384},
+        "validator": {"model": "qwen2.5-coder:7b", "backend": "ollama", "vision": False, "context_window": 16384},
+    },
+    {
         "id": "full_power",
         "name": "Full power",
         "description": "Best quality. Requires ~48GB+ VRAM.",
