@@ -76,7 +76,7 @@ from web_lobster.memory.task_memory import TaskMemory, TaskRecord
 from web_lobster.mandate.enforcer import MandateEnforcer, MandateExpiredError, Violation
 from web_lobster.mandate.schema import Mandate
 from web_lobster.mandate.schema import url_matches
-from web_lobster.verify.evidence import EvidenceContext, ValueCheck, evaluate
+from web_lobster.verify.evidence import EvidenceCheck, EvidenceContext, ValueCheck, evaluate
 from web_lobster.verify.receipts import (
     MAX_RECEIPT_WRITES,
     ModelVerdict,
@@ -161,6 +161,8 @@ class Orchestrator:
         self._dead_urls: dict[str, str] = {}
         # The action whose outcome is worked out on the next step.
         self._pending_outcome: Optional[tuple[Action, str, bool]] = None
+        # Checks dropped because the page they name turned out not to exist.
+        self._dropped_checks: list[str] = []
 
         # One receipt per finished sub-goal, chained so later edits are detectable
         self.receipts = ReceiptLog()
@@ -502,6 +504,7 @@ class Orchestrator:
         try:
             self._reported_blocks.clear()
             self._dead_urls.clear()
+            self._dropped_checks.clear()
             self._pending_outcome = None
 
             # 1. Launch browser
@@ -702,18 +705,24 @@ class Orchestrator:
                     last.outcome = await self._describe_outcome(last, before_url, ok, observation)
                     self._pending_outcome = None
 
-                # --- A GOAL THAT CAN'T BE REACHED ---
-                # A planner invents a url check for a page that doesn't exist, and
-                # the executor is stuck between evidence it can't satisfy and a URL
-                # it's refused. End the attempt and say why, so the plan changes.
-                unreachable = self._unreachable_check(sub_goal)
-                if unreachable:
-                    logger.warning("evidence_url_is_dead", id=sub_goal.id, url=unreachable)
+                # --- EVIDENCE THAT POINTS AT A PAGE THAT ISN'T THERE ---
+                # The planner can't see pages, so a url it writes is either from
+                # the task, the start page, or invented — and an invented one is
+                # sometimes right (/wiki/Mount_Everest) and sometimes not
+                # (/speakers/2026). Code can't tell in advance, but the moment the
+                # browser proves the page doesn't exist, the check can never pass.
+                # Drop it and carry on with the page that does exist, rather than
+                # bouncing between a check it can't meet and a URL it's refused.
+                for check, dead in self._unreachable_checks(sub_goal):
+                    why = self._dead_urls.get(dead.rstrip("/"), "doesn't exist")
+                    logger.warning("evidence_url_is_dead", id=sub_goal.id, url=dead)
+                    sub_goal.evidence = [c for c in sub_goal.evidence if c is not check]
+                    goal_view.evidence = [c for c in goal_view.evidence if c.describe() != check.describe()]
+                    self._dropped_checks.append(f"{check.describe()} ({dead} {why})")
                     reflections.append(
-                        f"This step can't be finished: its evidence needs {unreachable}, "
-                        f"and that page {self._dead_urls.get(unreachable.rstrip('/'), 'does not exist')}."
+                        f"Ignore {dead}: it {why}. That page is not where this step gets "
+                        "finished — work with the page you're on."
                     )
-                    break
 
                 # --- A PAGE WITH NOTHING ON IT ---
                 # A guessed URL can land on a page with no elements and no text,
@@ -1080,6 +1089,11 @@ class Orchestrator:
             return {}
         if self.enforcer:
             observation = self.enforcer.redact_observation(observation)
+        if _looks_empty(observation):
+            # Values are read off a page that may still be rendering. A festival's
+            # speaker list arrives seven seconds in; read at two, the run came
+            # back done with nothing in it three times out of three.
+            observation = await self._wait_for_the_page(observation)
         # Read the page's main content: an observation's truncated text often stops
         # inside the site's menus. (The controller redacts it under a mandate.)
         main_text = await self.browser.page_text(main_only=True, limit=PAGE_TEXT_LIMIT)
@@ -1350,6 +1364,9 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "answers": {**context.given, **context.answers} if context else {},
             "gaps": context.gaps if context else [],
             "plan_issues": list(self._plan_issues),
+            # Proof that was given up on, so a reader knows the step fell back
+            # to a model's judgement and why.
+            "problems": [f"Evidence dropped: {dropped}" for dropped in self._dropped_checks],
         }
 
     async def _describe_outcome(
@@ -1386,13 +1403,17 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
 
         return f"the page moved to {url}" if moved else ""
 
-    def _unreachable_check(self, sub_goal: SubGoal) -> Optional[str]:
-        """A url check pointing at a page we've found doesn't exist, if any."""
-        for dead in self._dead_urls:
-            for check in sub_goal.evidence:
-                if check.type == "url" and url_matches(dead, check.pattern):
-                    return dead
-        return None
+    def _unreachable_checks(self, sub_goal: SubGoal) -> list[tuple[EvidenceCheck, str]]:
+        """Url checks pointing at pages the browser has proved don't exist."""
+        found = []
+        for check in sub_goal.evidence:
+            if check.type != "url":
+                continue
+            for dead in self._dead_urls:
+                if url_matches(dead, check.pattern):
+                    found.append((check, dead))
+                    break
+        return found
 
     def _remember_dead(self, action: Action, landed: str, why: str) -> None:
         """A URL that led nowhere, by what was asked for and where it ended up."""

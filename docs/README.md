@@ -22,5 +22,6 @@ One per step, written before the code and kept as the record of why it is the wa
 | [step-6-planner-briefing.md](design/step-6-planner-briefing.md) | Thinking before acting: a brief, questions, mandate gaps, and plan review |
 | [step-7-trials-and-planners.md](design/step-7-trials-and-planners.md) | Measuring runs against known answers, and trying a stronger planner |
 | [step-8-signed-in-tasks.md](design/step-8-signed-in-tasks.md) | Persistent profiles and a password manager — designed, not built |
+| [step-9-architecture.md](design/step-9-architecture.md) | **Rethinking the control architecture**: layers, intents, findings, and the five loops — proposed, not built |
 
 Steps 1 to 4 (mandates, planner isolation, evidence and receipts, and the poisoned-page benchmark) predate the design-record habit; they're described in [architecture.md](architecture.md) and the [README](../README.md).

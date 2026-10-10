@@ -273,25 +273,40 @@ async def test_a_url_that_led_nowhere_is_refused_the_second_time(sites, tmp_path
     assert trail.count("already tried") == 2
 
 
-async def test_a_goal_whose_evidence_needs_a_dead_page_gives_up(sites, tmp_path):
+async def test_evidence_naming_a_dead_page_is_dropped_not_chased(sites, tmp_path):
     a, _ = sites
-    # A planner invented a url check for a page that doesn't exist, the executor
-    # was refused from going there, and the run spent its budget bouncing
-    # between evidence it couldn't satisfy and a URL it couldn't visit.
+    # The planner can't see pages, so a url it writes is either from the task,
+    # the start page, or invented. An invented one is sometimes right
+    # (/wiki/Mount_Everest) and sometimes not (/speakers/2026). Once the browser
+    # proves the page isn't there, the check can never pass — so drop it and
+    # work with the page that is, rather than grinding against both.
     goal = SubGoal(id=1, goal="Open the 2026 speakers page", success_criteria="Speakers are listed",
-                   evidence=[UrlCheck(pattern=f"{a.origin}/login.html")])  # a 404
+                   evidence=[UrlCheck(pattern=f"{a.origin}/login.html"),      # a 404
+                             TextCheck(contains="Go to checkout")])           # true where it starts
     orchestrator, _ = _orchestrator(tmp_path, goal)
-    orchestrator.executor.decide = AsyncMock(
-        return_value=Action(action=ActionType.NAVIGATE, url=f"{a.origin}/login.html")
-    )
+    tries = 0
+
+    async def decide(**kwargs):
+        nonlocal tries
+        tries += 1
+        if tries == 1:
+            return Action(action=ActionType.NAVIGATE, url=f"{a.origin}/login.html")
+        if tries == 2:
+            return Action(action=ActionType.GO_BACK)
+        return Action(action=ActionType.DONE, reason="back on the page that exists")
+
+    orchestrator.executor.decide = AsyncMock(side_effect=decide)
 
     result = await orchestrator.run("Open the speakers page", start_url=f"{a.origin}/links")
     _skip_without_chromium(result)
 
-    assert not result.success
-    # One attempt at the dead page, then it stops rather than grinding.
+    assert result.success, result.error            # finished on the evidence that could pass
     assert result.steps_taken < 10, result.actions
-    assert sum("navigate" in line for line in result.actions) <= 3, result.actions
+    [receipt] = result.receipts
+    assert [c.type for c in receipt.checks] == ["text"]   # the dead url check is gone
+    # And the run says out loud that it gave up on a proof, and why.
+    assert any("Evidence dropped" in problem and "login.html" in problem
+               for problem in result.problems), result.problems
 
 
 async def test_an_action_says_what_it_did(sites, tmp_path):

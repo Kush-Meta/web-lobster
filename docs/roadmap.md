@@ -42,7 +42,15 @@ The goal is a web agent you can hand a logged-in browser and a goal, knowing it 
 
 ## Next
 
-### Phase A: make the executor choose well
+### Phase 0: the control architecture
+
+Five days of live testing produced twenty-three fixes, and every one of them became another branch in a single `while` loop that now carries seventeen labelled concerns. The fixes were right; the shape is wrong. [design/step-9-architecture.md](design/step-9-architecture.md) works out why and what to do: five layers with contracts, **intents** instead of keystrokes, **findings** as a typed feedback channel that respects planner isolation, and five named loops in place of one implicit one.
+
+It subsumes phase A below — the executor choosing the wrong verb is an affordance problem, not a prompt problem — and it comes first, in six shippable phases, each measured before the next starts.
+
+*The architectural test:* a new live failure should be expressible as a new finding or a new affordance, not a new branch.
+
+### Phase A: make the executor choose well (now part of phase 0)
 
 The last thing between web-lobster and a page it has to drive. Everything under it is already built.
 
