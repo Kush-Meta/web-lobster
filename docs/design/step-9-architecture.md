@@ -149,7 +149,7 @@ No rewrite, no long-lived branch. Each phase is one commit, measured before the 
 | **0** | ✅ Extract the loop into a `StepRunner` | Done, after 1 and 2. Orchestrator 1,624 → 1,091 lines; 355 tests pass; see below |
 | **1** | ✅ Environment contract: settled observations, `rendering`, affordances | Done. Three ad-hoc waits deleted; 355 tests pass |
 | **2** | ✅ Actuator intents, the gesture chosen from the affordance | Done. See below |
-| **3** | Findings, with visibility, and `adapt` in the plan loop | The dead-URL and unreachable-check branches delete; prediction 2 |
+| **3** | ✅ Findings with visibility; impossible proofs dropped and reported to the planner | Done. Unit-tested; one live shape still to be caught in the act — see below |
 | **4** | Progress-based budgets, replacing fixed step caps | Median steps down, no success-rate loss |
 | **5** | Findings into memory, so a site's quirks survive the run | Plan reuse finally measurable |
 
@@ -266,6 +266,39 @@ That is the third appearance of one fault:
 | Festival speakers | `page URL matches …/speakers/2026` | The site has no such path |
 
 Three tasks, three check types, one cause: **the planner writes a proof nothing can satisfy, and the run is obliged to chase it to the end of its budget.** Every other layer now does its job and hands the step a page it could finish on. This is the binding constraint, and it is what phase 3 is for.
+### Phase 3: findings, and giving up on a proof that can't pass
+
+[`core/findings.py`](../../web_lobster/core/findings.py) is the primitive a dozen earlier fixes were reaching for: a fact *code* established while running, which can travel.
+
+```python
+page_missing(url, status)        # the browser got a 404, or a blank document
+check_unreachable(check, why)    # this proof can never pass
+value_not_here(name, url)        # the value isn't on the page the plan expected
+field_needs_choosing(label)      # typing into it doesn't stick
+no_progress(attempts)            # the same state, N times over
+```
+
+**Visibility is the safety argument, and it is a field on the type.** `page_missing` carries a URL the planner authored and a status code the network measured, so the planner may hear it. `field_needs_choosing` carries a *label* — text a page wrote — so it stops at the executor, exactly as text values already do. `for_planner()` is the one place that filter lives, and adding a finding means deciding, explicitly, who is allowed to hear it. `tests/test_findings.py` pins it: five findings in, four reach the planner, and the one carrying page text is not among them.
+
+Findings now flow into `_describe_failure`, which is what the planner reads when a step fails. Before this, that channel was counts and enum names only — true to the isolation rule, but it meant a plan built on a wrong assumption could never be corrected, only thrown away.
+
+**The rule that catches all three live shapes.** A check is impossible when either:
+
+- it names a URL the browser has proved isn't there, or
+- **it has failed three times while the page hasn't changed.**
+
+The second needs no guesses about phrasing, which is why it covers a phrase Wikipedia never uses, a field's own label, and an invented path alike. When it fires, the check is dropped, a finding is recorded, the executor is told to stop trying to satisfy it, and the step finishes on whatever evidence remains — or falls to the validator with its receipt saying it was judged rather than proven. The run record lists every proof given up on, under `problems`.
+
+**What is and isn't demonstrated.** The rule is unit-tested: a step with one satisfiable and one impossible check gives up on the second, finishes on the first, and the finding reaches the planner.
+
+Live, it has not been caught in the act. Six Everest runs today came back **6 of 6 right and verified, median 4 steps and 60 s** — against 0 of 1 in 30 steps the run before, and a historical median of 8 to 9 steps — and **not one of them dropped a proof**, because the planner wrote `url` + `value` checks every time instead of the invented phrase. So:
+
+- The numbers are the best this task has measured, and they are **not** evidence for phase 3.
+- The failure phase 3 exists for did not recur in six attempts, having appeared in two of three a week ago. That shift is unexplained; the honest reading is plan variance on a small sample, not a fix.
+- Catching the rule firing on a live site is still outstanding. The Google Flights `"Where from?"` check is the reliable way to get it, since that one reproduces.
+
+Claiming the 6 of 6 for this change would be the same mistake as attributing an earlier Everest swing to the wrong fix — which happened in this project, and is why the receipts get read before the explanation.
+
 ## What this does not fix
 
 - **The planner is still a 7B model** that under-asks and writes paragraphs for goals. Better structure gives it less room to be wrong; it doesn't make it smarter.

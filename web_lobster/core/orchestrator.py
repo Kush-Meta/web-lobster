@@ -62,6 +62,7 @@ from web_lobster.core.briefing import (
 )
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.values import ExtractedValue, ValueSpec, origin_of, render_value_refs
+from web_lobster.core.findings import for_planner
 from web_lobster.core.step_runner import StepRunner
 from web_lobster.models.planner import Planner, reads_only
 from web_lobster.models.executor import Executor
@@ -819,6 +820,10 @@ class Orchestrator:
             if kinds:
                 blocked = ", ".join(f"{count}x {kind}" for kind, count in sorted(kinds.items()))
                 parts.append(f"mandate blocked {blocked}")
+        # What execution worked out about the world, filtered to what the planner
+        # may hear. A finding is page-derived but never page-content, and
+        # for_planner is the boundary: see core/findings.py.
+        parts.extend(for_planner(self.steps.findings()))
         return "; ".join(parts)
 
     async def _extract_answer(self, task: str, observation=None) -> Optional[str]:

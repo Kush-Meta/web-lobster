@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Optional
 
+from web_lobster.core.findings import Finding, check_unreachable, page_missing
 from web_lobster.core.values import origin_of
 from web_lobster.core.schemas import (
     Action,
@@ -55,14 +56,20 @@ class StepRunner:
         self._reported_blocks: set[str] = set()
         # The action whose outcome is worked out on the next step.
         self._pending_outcome: Optional[tuple[Action, str, bool]] = None
-        # Checks dropped because the page they name turned out not to exist.
+        # Proofs given up on, for the run record.
         self._dropped_checks: list[str] = []
+        # What code has worked out about the world this run (core/findings.py).
+        self._findings: list[Finding] = []
+        # Checks that keep failing, and the page they were failing on.
+        self._failing_checks: dict[str, tuple[int, str]] = {}
 
     def start_run(self) -> None:
         """Forget what the last run learned about the world."""
         self._dead_urls.clear()
         self._reported_blocks.clear()
         self._dropped_checks.clear()
+        self._findings.clear()
+        self._failing_checks.clear()
         self._pending_outcome = None
 
     def __getattr__(self, name: str):
@@ -139,6 +146,11 @@ class StepRunner:
                     last.outcome = await self._describe_outcome(last, before_url, ok, observation)
                     self._pending_outcome = None
 
+                # How this step's code-checkable evidence stands right now. Used
+                # twice below: to notice a proof that can never pass, and to stop
+                # as soon as the step is provably done.
+                now = await self._cheap_checks(sub_goal)
+
                 # --- EVIDENCE THAT POINTS AT A PAGE THAT ISN'T THERE ---
                 # The planner can't see pages, so a url it writes is either from
                 # the task, the start page, or invented — and an invented one is
@@ -147,15 +159,12 @@ class StepRunner:
                 # browser proves the page doesn't exist, the check can never pass.
                 # Drop it and carry on with the page that does exist, rather than
                 # bouncing between a check it can't meet and a URL it's refused.
-                for check, dead in self._unreachable_checks(sub_goal):
-                    why = self._dead_urls.get(dead.rstrip("/"), "doesn't exist")
-                    logger.warning("evidence_url_is_dead", id=sub_goal.id, url=dead)
-                    sub_goal.evidence = [c for c in sub_goal.evidence if c is not check]
-                    goal_view.evidence = [c for c in goal_view.evidence if c.describe() != check.describe()]
-                    self._dropped_checks.append(f"{check.describe()} ({dead} {why})")
+                for check, finding in self._impossible_checks(sub_goal, now):
+                    logger.warning("evidence_unreachable", id=sub_goal.id, why=finding.detail)
+                    self._drop(sub_goal, goal_view, check, finding)
                     reflections.append(
-                        f"Ignore {dead}: it {why}. That page is not where this step gets "
-                        "finished — work with the page you're on."
+                        f"Stop trying to satisfy {check.describe()!r}: {finding.detail}. "
+                        "Finish this step on the page you actually have."
                     )
 
                 # --- A PAGE WITH NOTHING ON IT ---
@@ -188,7 +197,6 @@ class StepRunner:
                 # this goal began now passes — otherwise a goal whose url
                 # already matched would finish without doing its work.
                 if proven_at_start is not None and action_count_this_attempt > 1:
-                    now = await self._cheap_checks(sub_goal)
                     if now and all(now.values()) and any(
                         not was for name, was in proven_at_start.items() if name in now
                     ):
@@ -470,8 +478,76 @@ class StepRunner:
 
         return f"the page moved to {url}" if moved else ""
 
-    def _unreachable_checks(self, sub_goal: SubGoal) -> list[tuple[EvidenceCheck, str]]:
-        """Url checks pointing at pages the browser has proved don't exist."""
+    # How many times a check may fail on a page that is not changing before it
+    # counts as impossible. Three live tasks each burned their whole budget on
+    # one: a phrase Wikipedia never uses, a field's own label, a path the site
+    # does not have.
+    IMPOSSIBLE_AFTER = 3
+
+    def _impossible_checks(
+        self, sub_goal: SubGoal, standing: Optional[dict[str, bool]]
+    ) -> list[tuple[EvidenceCheck, Finding]]:
+        """Checks this step can never satisfy, with the finding that says why.
+
+        Two ways to know. A url check naming a page the browser has proved is
+        not there can be ruled out at once. Anything else is ruled out by
+        behaviour: a check that keeps failing while the page does not change is
+        not going to start passing, and the step is otherwise stuck. That rule
+        needs no guesses about phrasing, which is why it catches all three
+        shapes seen live.
+        """
+        impossible: list[tuple[EvidenceCheck, Finding]] = []
+
+        for check, dead in self._dead_url_checks(sub_goal):
+            why = self._dead_urls.get(dead.rstrip("/"), "is not there")
+            impossible.append((check, page_missing(dead)))
+            logger.info("check_names_a_dead_page", url=dead, why=why)
+
+        if standing:
+            url_now = self.browser.current_url
+            for check in sub_goal.evidence:
+                if check.type != "text":
+                    continue
+                label = check.describe()
+                passed = standing.get(label)
+                if passed is None:
+                    continue
+                if passed:
+                    self._failing_checks.pop(label, None)
+                    continue
+                failures, seen_at = self._failing_checks.get(label, (0, url_now))
+                failures = failures + 1 if seen_at == url_now else 1
+                self._failing_checks[label] = (failures, url_now)
+                if failures >= self.IMPOSSIBLE_AFTER:
+                    impossible.append((check, check_unreachable(
+                        label, f"it has failed {failures} times and the page has not changed",
+                    )))
+
+        return impossible
+
+    def _drop(self, sub_goal: SubGoal, goal_view: SubGoal,
+              check: EvidenceCheck, finding: Finding) -> None:
+        """Give up on one proof, and say so where it can be read.
+
+        The step then finishes on whatever evidence remains, or falls to the
+        validator with its receipt saying it was judged rather than proven.
+        """
+        sub_goal.evidence = [c for c in sub_goal.evidence if c is not check]
+        goal_view.evidence = [c for c in goal_view.evidence if c.describe() != check.describe()]
+        self._dropped_checks.append(f"{check.describe()} — {finding.detail}")
+        self._failing_checks.pop(check.describe(), None)
+        self.found(finding)
+
+    def findings(self) -> list[Finding]:
+        """What code has worked out about the world this run."""
+        return list(self._findings)
+
+    def found(self, finding: Finding) -> None:
+        """Record something code worked out about the world."""
+        self._findings.append(finding)
+
+    def _dead_url_checks(self, sub_goal: SubGoal) -> list[tuple[EvidenceCheck, str]]:
+        """Url checks naming a page the browser has proved is not there."""
         found = []
         for check in sub_goal.evidence:
             if check.type != "url":

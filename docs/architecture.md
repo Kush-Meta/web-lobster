@@ -188,6 +188,12 @@ Each role (planner, executor, validator) picks its own backend in config. The ex
 | `verify/evidence.py` | `url`, `request`, `text`, and `value` checks, evaluated in code. A `url` check fails on an error page; a `text` check also reads what the page's fields hold, and matches a date however a site writes it; a `value` check with a null value asks only whether the value was read |
 | `verify/receipts.py` | Receipts, the hash chain, and chain verification |
 
+### Learning while running
+
+| Module | Role |
+|---|---|
+| `core/findings.py` | Facts code works out about the world during a run — a page that isn't there, a proof that can't pass, a value that isn't on this page, a field that won't keep what's typed. Each carries **who may hear it**: a finding is page-derived but never page-content, so one built from a URL the plan wrote and a status the network measured may reach the planner, while one carrying a label the page wrote stops at the executor |
+| `core/step_runner.py` | One sub-goal at a time: observe, act, raise findings, decide whether the step is proven, unreachable, stalled or out of budget |
 ### Measurement
 
 | Module | Role |

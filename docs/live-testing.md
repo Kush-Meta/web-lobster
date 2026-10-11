@@ -199,6 +199,19 @@ After [the architecture rethink](design/step-9-architecture.md) phases 1 and 2: 
 **What holds it instead** is a check the planner wrote that nothing could satisfy — `page text contains "Where from?"` on a step whose job was to *clear* the field with that label. Labels are attributes, so no amount of success makes that text appear. The run spent eighteen steps being told, correctly, that its evidence wasn't met. Same fault as the invented `…/speakers/2026` url, in a different check type, and it is what phase 3 exists for.
 
 **One stale test, worth recording.** python-latest reported `3.15.0` and was scored wrong: 3.15.0 had shipped and the expectation still said 3.14.7. The agent read the page correctly. The trial file now carries the date it was last updated.
+### Phases 0 and 3, and a result that isn't evidence (2026-10-11)
+
+The step loop moved into [`core/step_runner.py`](../web_lobster/core/step_runner.py) (orchestrator 1,624 → 1,091 lines, 355 tests unchanged), and [findings](design/step-9-architecture.md#phase-3-findings-and-giving-up-on-a-proof-that-cant-pass) landed: typed facts code works out while running, each carrying who may hear it, plus a rule that gives up on a proof that can never pass.
+
+| Task | Result |
+|---|---|
+| Everest, 6 runs | **6/6 right and verified**, median **4 steps, 60 s** |
+| Eiffel | 2/2, 0 steps, 40 s |
+| python.org | 1/2 — the other run died on a Playwright `TargetClosedError`, not a logic failure |
+
+Everest at 4 steps is the best it has measured; its historical median was 8 to 9, and one run a day earlier took 30 and failed. **None of that is evidence for phase 3.** Not one of the six runs dropped a proof: the planner wrote `url` + `value` checks every time, instead of the invented phrase that caused the 30-step failure. The rule is unit-tested and has not been caught firing live.
+
+Worth recording for its own sake: the guessed text check appeared in two of three runs a week ago and in none of six today. Unexplained, and on a sample this size the honest word is variance.
 
 ## What the fixes do to the guarantees
 

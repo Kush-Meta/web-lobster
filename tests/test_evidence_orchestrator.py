@@ -18,6 +18,7 @@ from web_lobster.core.orchestrator import Orchestrator
 from web_lobster.core.schemas import Action, ActionType, SubGoal, TaskPlan, ValidationResult
 from web_lobster.mandate.schema import Mandate
 from web_lobster.memory.task_memory import TaskMemory
+from web_lobster.core.findings import for_planner
 from web_lobster.core.values import ExtractedValue, ValueSpec, ValueType
 from web_lobster.verify.evidence import RequestCheck, TextCheck, UrlCheck, ValueCheck
 from web_lobster.verify.receipts import verify_chain
@@ -271,6 +272,30 @@ async def test_a_url_that_led_nowhere_is_refused_the_second_time(sites, tmp_path
     assert trail.count("navigate") == 1, trail
     assert "answered 404" in trail
     assert trail.count("already tried") == 2
+
+
+async def test_a_check_that_never_passes_is_given_up_on(sites, tmp_path):
+    a, _ = sites
+    # Three live tasks each burned a whole budget on a proof nothing could
+    # satisfy: a phrase Wikipedia never uses, a field's own label, a path the
+    # site does not have. The rule needs no guesses about phrasing — a check
+    # that keeps failing while the page does not change is not going to start.
+    goal = SubGoal(id=1, goal="Read the checkout page", success_criteria="Checkout is open",
+                   evidence=[UrlCheck(pattern=f"{a.origin}/checkout*"),
+                             TextCheck(contains="a phrase this page never shows")])
+    orchestrator, _ = _orchestrator(tmp_path, goal)
+    orchestrator.executor.decide = AsyncMock(return_value=Action(action=ActionType.SCROLL))
+
+    result = await orchestrator.run("Read checkout", start_url=f"{a.origin}/checkout")
+    _skip_without_chromium(result)
+
+    # It finished on the url check, having given up on the impossible one.
+    assert result.success, result.error
+    assert any("never shows" in problem for problem in result.problems), result.problems
+    assert any("can never pass" in f.detail for f in orchestrator.steps.findings())
+    # And the planner would be told, because nothing a page wrote is in it.
+    assert any("can never pass" in line for line in
+               for_planner(orchestrator.steps.findings()))
 
 
 async def test_evidence_naming_a_dead_page_is_dropped_not_chased(sites, tmp_path):
