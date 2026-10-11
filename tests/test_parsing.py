@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from web_lobster.models.planner import Planner
+from web_lobster.models.planner import _ENTERS_A_VALUE, Planner
 from web_lobster.models.executor import Executor
 from web_lobster.core.schemas import ActionType
 
@@ -195,6 +195,21 @@ That should work!'''
         # back to a model's opinion, whether or not it folds into the step before.
         checks = [(c.name, c.op, c.value) for g in goals for c in g.evidence if c.type == "value"]
         assert checks == [("backpack_price", "!=", None)]
+
+    def test_a_step_that_enters_a_value_can_prove_it(self):
+        # Two Google Flights runs spent their whole budget on "Set the Departure
+        # date to 2026-11-12" with no evidence at all, judged by a model that
+        # said no. A value in a field is checkable, and a text check reads field
+        # values and matches a date however the site writes it.
+        goals = self._parse(json.dumps([
+            {"id": 1, "goal": "Set the Departure date to 2026-11-12"},
+            {"id": 2, "goal": "Open the article about Mount Everest"},
+        ]))
+        assert [[(c.type, c.contains) for c in g.evidence] for g in goals] == [
+            [("text", "2026-11-12")], [],      # only the step that enters something
+        ]
+        # A quoted value works the same way, where the step survives folding.
+        assert _ENTERS_A_VALUE.match("Set the origin to 'New York'").group("quoted") == "New York"
 
     def test_a_step_that_has_to_do_something_gets_no_free_proof(self):
         # A Tokyo run came back verified on a price from an advert, because its

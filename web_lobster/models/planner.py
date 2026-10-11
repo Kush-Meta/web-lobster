@@ -49,6 +49,19 @@ _READS_ONLY_GOAL = re.compile(
 _GOAL_KEYS = ("goal", "description", "sub_goal", "subgoal", "task", "name", "title", "objective", "action", "step")
 # A search step and its quoted term: "Search for 'Mount Everest'".
 _SEARCH_GOAL = re.compile(r"""^\s*search\b[^'"‘“]*['"‘“](?P<term>[^'"’”]{2,80})['"’”]""", re.IGNORECASE)
+# A step that puts a value somewhere, and the value it names: "Set the Departure
+# date to 2026-11-12", "Enter 'New York' in the origin field". A value entered
+# into a field is checkable — the field should hold it — and a step with no
+# evidence at all falls to a model's opinion instead. Live, a date step with no
+# checks cost two Google Flights runs their whole budget.
+_ENTERS_A_VALUE = re.compile(
+    r"^\s*(?:set|enter|type|fill|put|choose|select|pick)\b.*?"
+    r"(?:"
+    r"(?P<date>\d{4}-\d{2}-\d{2})"            # an ISO date, matched however a site writes it
+    r"|['\"‘“](?P<quoted>[^'\"’”]{2,60})['\"’”]"  # or a quoted value
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def reads_only(goal: str) -> bool:
@@ -85,6 +98,18 @@ def tidy_sub_goals(sub_goals: list[SubGoal]) -> list[SubGoal]:
             search = _SEARCH_GOAL.match(goal.goal)
             if search:
                 goal.evidence = [TextCheck(contains=search.group("term").strip())]
+        if not goal.evidence:
+            # A step that enters a value can prove itself: the field should hold
+            # it. Otherwise such a step has no evidence at all and falls to the
+            # validator, which is what happened to both date steps on Google
+            # Flights. A text check reads field values and matches a date
+            # however the site rewrites it, so 2026-11-12 is proven by
+            # "Thu, Nov 12".
+            entered = _ENTERS_A_VALUE.match(goal.goal)
+            if entered:
+                value = entered.group("date") or entered.group("quoted")
+                goal.evidence = [TextCheck(contains=value.strip())]
+                logger.info("planner_entry_step_given_a_check", sub_goal=goal.id, value=value)
         if not goal.evidence and goal.extract and reads_only(goal.goal):
             # A step whose whole job is reading can prove itself: the value was
             # read and passed its shape checks. Without this it falls to a model's

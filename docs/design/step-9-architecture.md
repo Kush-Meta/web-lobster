@@ -299,6 +299,28 @@ Live, it has not been caught in the act. Six Everest runs today came back **6 of
 
 Claiming the 6 of 6 for this change would be the same mistake as attributing an earlier Everest swing to the wrong fix — which happened in this project, and is why the receipts get read before the explanation.
 
+### Google Flights, read properly: still not solved
+
+Two runs after the entry-step check landed: **1 of 2 "done", 0 of 2 verified.** The "done" is a false positive, and the receipts say exactly how:
+
+```
+goal 1  "Clear the 'Where from?' and 'Where to?' fields"   True   evidence  (text passed)
+goal 2  'Search for round trips from New York to Tokyo…'    False  evidence  (url failed)
+goal 1  "Click on the 'Flights' link"                       True   model     (no checks)
+```
+
+The search step failed. The run then replanned into a single goal — *click a link* — which had no evidence at all, so a model judged it, said yes, and the plan was complete. `cheapest_price` came back **129.0**: the promo card on the home page, not a fare. The search never ran.
+
+**What held, and it is the part worth keeping.** `verified` is **false** on that run, and the summary says *"1 of 2 completed sub-goal(s) were judged by a model"*. The system did not claim proof it did not have. A caller reading `verified` gets the truth; a caller reading `done` does not.
+
+**Three things this says.**
+
+1. **The evidence vacuum recurs at the replan level.** A replanned goal with no checks can flip a whole run to `done`. The entry-step rule added here covers "set the date to …" and "enter 'New York'"; it does not cover "click the Flights link", and nothing yet gives a *replanned* goal evidence.
+2. **`done` is a weaker claim than the README implies.** It means every sub-goal in the final plan completed, where a model's opinion counts as completion. `verified` is the claim with teeth. That distinction is documented, but this run shows it matters more than the wording suggests.
+3. **The new check never ran.** Neither run reached a date step: one stalled clearing the city fields, the other replanned away. So the entry-step rule is unit-tested and, like phase 3's impossible-check rule, has not been seen firing live.
+
+**And a pattern worth naming.** Three times now a mechanism has been built for a failure that then stopped reproducing: the Everest phrase check (2 of 3 runs a week ago, 0 of 6 now), the Flights label check (every run, then gone), the date step with no evidence (both runs, then unreached). Live failure modes drift as the planner's output varies, which makes a fix aimed at one instance hard to validate — and is an argument for the structural work rather than against it, since the structure is what survives the drift. It is also why nothing here is claimed as proven by the numbers.
+
 ## What this does not fix
 
 - **The planner is still a 7B model** that under-asks and writes paragraphs for goals. Better structure gives it less room to be wrong; it doesn't make it smarter.

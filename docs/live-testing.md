@@ -212,6 +212,23 @@ The step loop moved into [`core/step_runner.py`](../web_lobster/core/step_runner
 Everest at 4 steps is the best it has measured; its historical median was 8 to 9, and one run a day earlier took 30 and failed. **None of that is evidence for phase 3.** Not one of the six runs dropped a proof: the planner wrote `url` + `value` checks every time, instead of the invented phrase that caused the 30-step failure. The rule is unit-tested and has not been caught firing live.
 
 Worth recording for its own sake: the guessed text check appeared in two of three runs a week ago and in none of six today. Unexplained, and on a sample this size the honest word is variance.
+### Google Flights, and why none of this is claimed as proven (2026-10-11)
+
+A step that enters a value can now prove itself: `Set the Departure date to 2026-11-12` gets a text check for that date, which a field holding `Thu, Nov 12` satisfies. Before, such a step had **no evidence at all** and fell to a model's opinion — which is how two runs lost their budget.
+
+Two runs after: **1 of 2 "done", 0 of 2 verified — and the "done" is false.** The search step failed, the run replanned into a single goal (*click the Flights link*) with no checks, a model said yes, and `cheapest_price` came back as **129.0**: the promo card on the home page. The search never ran.
+
+What held is the part that matters: `verified` was **false**, and the summary said *"1 of 2 completed sub-goal(s) were judged by a model"*. The system didn't claim proof it didn't have. `done` is the weaker word, and this run is the clearest demonstration of the gap between them.
+
+**Nothing in this round is claimed as proven by numbers**, and the reason is worth recording. Three times now a mechanism was built for a failure that then stopped reproducing:
+
+| Failure | Then | Now |
+|---|---|---|
+| Everest's invented phrase check | 2 of 3 runs | 0 of 6 |
+| Flights' `"Where from?"` label check | every run | gone |
+| A date step with no evidence | both runs | neither run reached one |
+
+Live failure modes drift as the planner's output varies, so a fix aimed at one instance is hard to validate. That is an argument for structural work rather than against it — the structure is what survives the drift — but it means the honest status of phase 3's impossible-check rule and this entry-step check is *unit-tested, not yet seen firing live*.
 
 ## What the fixes do to the guarantees
 
