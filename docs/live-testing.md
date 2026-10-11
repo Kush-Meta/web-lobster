@@ -185,6 +185,20 @@ and nothing else. It could see what it had tried and never what came of it, so t
 **One bug found by adding them.** The outcome was first computed before the slow-page wait, so a page that was merely still rendering got written off as dead — and the page written off was `/speakers`, the right one. The wait now runs before anything judges the page.
 
 **What it didn't fix.** The guessing moved up a level: the planner now writes a url check for `https://…/speakers/2026`, a path it invented, and the run chases that instead. We already drop planner url checks that spell out a *query string*; a made-up *path* is the same mistake one level up, and is still open. Nor does any run read a speaker's name — that page lists years, and nothing in the plan picks one.
+### Affordances, and a prediction that failed (2026-10-10)
+
+After [the architecture rethink](design/step-9-architecture.md) phases 1 and 2: the page now says what each element takes, and the gesture is chosen from that rather than from the executor's verb.
+
+| Task | Result |
+|---|---|
+| Eiffel, python.org, Everest | Unchanged — Everest 1/2, its old guessed-text-check failure |
+| Google Flights | **0 of 2**, the prediction failed |
+
+**The cities commit now**, which is what phase 2 was for: `type (el=14) "New York" → the field holds it`. Every earlier run on that site lost those values to the next click.
+
+**What holds it instead** is a check the planner wrote that nothing could satisfy — `page text contains "Where from?"` on a step whose job was to *clear* the field with that label. Labels are attributes, so no amount of success makes that text appear. The run spent eighteen steps being told, correctly, that its evidence wasn't met. Same fault as the invented `…/speakers/2026` url, in a different check type, and it is what phase 3 exists for.
+
+**One stale test, worth recording.** python-latest reported `3.15.0` and was scored wrong: 3.15.0 had shipped and the expectation still said 3.14.7. The agent read the page correctly. The trial file now carries the date it was last updated.
 
 ## What the fixes do to the guarantees
 

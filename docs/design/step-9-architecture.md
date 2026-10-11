@@ -134,7 +134,7 @@ The **adapt** decision in the plan loop is new and is the point. Today a wrong a
 
 Predictions, falsifiable with the trials tool:
 
-1. **Google Flights completes its search** in a majority of runs. Nothing else has moved this.
+1. ~~**Google Flights completes its search** in a majority of runs.~~ **Failed** after phases 1 and 2: 0 of 2. The cities now commit — the browser layer stopped being the constraint — and the run is instead held by a planner-written check that nothing can satisfy. See [below](#prediction-1-failed-and-the-reason-is-the-next-phase).
 2. **The festival task reads a speaker's name** — it needs one `Choose(year)` the plan never had.
 3. **No regression** on the five tasks that work: three lookups, sign-in, GitHub.
 4. **The step runner stays under six concerns.** The architectural test: a new live failure should be expressible as a new finding or a new affordance — not a new branch.
@@ -194,6 +194,35 @@ This is the same gesture that was tried once as *make `type` commit everything* 
 ### What the loop lost
 
 Three waits and one predicate, and — more to the point — the *class* of fix. The next "it picked the wrong verb" bug is a line in `takes()`, not a branch in the loop.
+
+### Prediction 1 failed, and the reason is the next phase
+
+Google Flights after phases 1 and 2: **0 of 2 done**, 18.5 steps median. The prediction in this document — that intents and affordances would get the search to run — was wrong, and the trails say why.
+
+**What phase 2 did do.** Both runs show cities going in and *staying* in:
+
+```
+22. type (el=14) "New York" → the field holds it
+23. type (el=15) "Tokyo"    → the field holds it
+```
+
+That outcome comes from the affordance-aware path: the page said both boxes take a `choose`, so a `type` from the executor committed instead of being thrown away by the next click. Every earlier run on this site lost those values. The widget layer is no longer what fails.
+
+**What fails now.** Both runs spent their whole budget on sub-goal 1, "Clear the 'Where from?' and 'Where to?' fields", whose evidence was:
+
+```
+page text contains "Where from?"
+page text contains "Where to?"
+```
+
+Those strings are the fields' own *labels* — attributes, not page text — and the goal is to **clear** the fields they label. The check cannot pass however well the step goes, so the executor ground away at `triple_click` seventeen times while being told, correctly, that the evidence wasn't met.
+
+This is the same fault as the invented `…/speakers/2026` url check, in a different check type: **the planner writes a proof that nothing could satisfy, and the run is obliged to chase it.** Dropping it needs the thing phase 3 is for — a finding that says *this check is unreachable*, raised where it's discovered and acted on by the plan loop. Two narrower rules fall out of this run too, and belong in `tidy_sub_goals`:
+
+- A text check for an element's own label is unsatisfiable: labels live in attributes, and `inner_text` never sees them.
+- A goal whose outcome is *absence* ("clear the field") can't be proven by a text check for the thing being cleared.
+
+**The order the design predicted held up.** Phase 2 was supposed to stop the browser layer being the constraint, and it did — the constraint moved up a layer, to evidence the planner invents. That is phase 3.
 
 ## What this does not fix
 
