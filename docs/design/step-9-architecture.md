@@ -146,7 +146,7 @@ No rewrite, no long-lived branch. Each phase is one commit, measured before the 
 
 | Phase | What | How it's judged |
 |---|---|---|
-| **0** | Extract the loop into a `StepRunner` | Deferred on purpose: phases 1 and 2 shrank the loop by giving its concerns homes, which was the actual goal. What's left is worth doing before phase 3 |
+| **0** | ✅ Extract the loop into a `StepRunner` | Done, after 1 and 2. Orchestrator 1,624 → 1,091 lines; 355 tests pass; see below |
 | **1** | ✅ Environment contract: settled observations, `rendering`, affordances | Done. Three ad-hoc waits deleted; 355 tests pass |
 | **2** | ✅ Actuator intents, the gesture chosen from the affordance | Done. See below |
 | **3** | Findings, with visibility, and `adapt` in the plan loop | The dead-URL and unreachable-check branches delete; prediction 2 |
@@ -224,6 +224,48 @@ This is the same fault as the invented `…/speakers/2026` url check, in a diffe
 
 **The order the design predicted held up.** Phase 2 was supposed to stop the browser layer being the constraint, and it did — the constraint moved up a layer, to evidence the planner invents. That is phase 3.
 
+### Phase 0, after the fact
+
+Done second, not first, and it was the right order: phases 1 and 2 had already moved the verb question and the page-settling out of the loop, so what got extracted was the loop that remained rather than one that was about to change shape.
+
+[`core/step_runner.py`](../../web_lobster/core/step_runner.py) now owns one sub-goal at a time. The orchestrator went from **1,624 lines to 1,091**, and the runner is 556.
+
+**The move was a move, not a rewrite.** `StepRunner.__getattr__` delegates anything the layer doesn't own back to the orchestrator, so every `self.browser`, `self.state`, `self._verify` in the lifted code kept working untouched. That makes the diff reviewable and the behaviour identical — and it leaves the remaining coupling in plain sight:
+
+| | |
+|---|---|
+| **Owns** (15) | the loop, `_cheap_checks`, `_describe_outcome`, `_remember_dead`, `_unreachable_checks`, `_mandate_approves`, `_report_violation`, `_enforce_after_action`, `_request_confirmation`, the action trail, and the run-scoped memory of dead URLs, reported blocks and dropped proofs |
+| **Borrows** (19) | `browser`, `config`, `state`, `executor`, `safety`, `enforcer`, `mcp`, `ui`, `display`, `context`, `stuck_detector`, `_verify`, `_already_there`, `_render_goal`, `_goal_network_start`, `_proven_by_skip`, `_visited_origins`, `_ui_emit`, `_ui_wait_if_paused` |
+
+Narrowing that second list is what phases 3 to 5 are for. Writing it down is the point: before the split there was no list, because there was no boundary.
+
+**Two real problems the extraction surfaced**, which is the usual argument for doing it at all:
+
+- `_page_fields()` was a one-line wrapper over `browser.field_values()` used by both layers. The split would have duplicated it, so it's gone and both callers ask the browser.
+- `collapse_violations()` lived in the orchestrator while operating purely on `Violation`s. It moved to `mandate/enforcer.py`, which also removed the circular import the extraction would otherwise have needed.
+
+**One hazard worth recording.** `__getattr__` intercepts reads, not writes — so the lifted code's `self._goal_start_url = …` landed on the runner while the orchestrator's skip-ahead kept reading its own stale copy. Three tests caught it immediately. Per-goal state that both layers touch is now written explicitly through `self.agent`, with a comment saying why.
+
+### Three tasks, three check types, one cause
+
+The live run after phase 0 made the case for phase 3 by itself. Everest reached the right article in **two steps** — the new machinery working exactly as intended:
+
+```
+1. type (el=3) "Mount Everest" → the field holds it
+2. click (el=5)                → went to https://en.wikipedia.org/wiki/Mount_Everest
+```
+
+and then spent twenty-eight more being told `Missing evidence: page text contains "elevation of Mount Everest is"` — a phrase Wikipedia has never used.
+
+That is the third appearance of one fault:
+
+| Task | The proof the planner invented | Why it can't pass |
+|---|---|---|
+| Everest | `page text contains "elevation of Mount Everest is"` | The site doesn't phrase it that way |
+| Google Flights | `page text contains "Where from?"` | That's a field's label, and the step's job was to clear the field |
+| Festival speakers | `page URL matches …/speakers/2026` | The site has no such path |
+
+Three tasks, three check types, one cause: **the planner writes a proof nothing can satisfy, and the run is obliged to chase it to the end of its budget.** Every other layer now does its job and hands the step a page it could finish on. This is the binding constraint, and it is what phase 3 is for.
 ## What this does not fix
 
 - **The planner is still a 7B model** that under-asks and writes paragraphs for goals. Better structure gives it less room to be wrong; it doesn't make it smarter.

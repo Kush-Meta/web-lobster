@@ -85,8 +85,8 @@ def test_granted_data_entered_through_select_is_approved_by_the_mandate(sites):
     orchestrator = Orchestrator(WebLobsterConfig(), mandate=_mandate(a))
     for action_type in (ActionType.TYPE, ActionType.SELECT):
         action = Action(action=action_type, element_id=1, text="{{email}}")
-        assert orchestrator._mandate_approves(action, f"{a.origin}/form"), action_type
-    assert not orchestrator._mandate_approves(
+        assert orchestrator.steps._mandate_approves(action, f"{a.origin}/form"), action_type
+    assert not orchestrator.steps._mandate_approves(
         Action(action=ActionType.CLICK, element_id=1), f"{a.origin}/form"
     )
 

@@ -62,6 +62,7 @@ from web_lobster.core.briefing import (
 )
 from web_lobster.core.config import WebLobsterConfig
 from web_lobster.core.values import ExtractedValue, ValueSpec, origin_of, render_value_refs
+from web_lobster.core.step_runner import StepRunner
 from web_lobster.models.planner import Planner, reads_only
 from web_lobster.models.executor import Executor
 from web_lobster.models.validator import Validator
@@ -73,7 +74,12 @@ from web_lobster.browser.controller import BrowserController
 from web_lobster.actions.safety import SafetyGate
 from web_lobster.tools.mcp_manager import MCPManager
 from web_lobster.memory.task_memory import TaskMemory, TaskRecord
-from web_lobster.mandate.enforcer import MandateEnforcer, MandateExpiredError, Violation
+from web_lobster.mandate.enforcer import (
+    MandateEnforcer,
+    MandateExpiredError,
+    Violation,
+    collapse_violations,
+)
 from web_lobster.mandate.schema import Mandate
 from web_lobster.mandate.schema import url_matches
 from web_lobster.verify.evidence import EvidenceCheck, EvidenceContext, ValueCheck, evaluate
@@ -94,18 +100,6 @@ logger = get_logger("orchestrator")
 _NAVIGATION_GOAL = re.compile(
     r"^\s*(open|go to|navigate to|visit|load|return to|get to)\b", re.IGNORECASE
 )
-
-
-def collapse_violations(violations: list[Violation]) -> list[tuple[Violation, int]]:
-    """Group repeats of the same blocked request, keeping the first of each and a count."""
-    groups: dict[tuple, list] = {}
-    for violation in violations:
-        key = (violation.kind, violation.detail)
-        if key in groups:
-            groups[key][1] += 1
-        else:
-            groups[key] = [violation, 1]
-    return [(violation, count) for violation, count in groups.values()]
 
 
 class Orchestrator:
@@ -155,14 +149,9 @@ class Orchestrator:
         # it runs on the executor's quarantined side; see core/values.py.
         self.extractor = Extractor(self.executor_backend, config.executor.temperature)
         self._goal_violations_start = 0
-        # Block signatures the executor has already been told about, once per run.
-        self._reported_blocks: set[str] = set()
-        # URLs that led nowhere, so the executor isn't allowed to try them twice.
-        self._dead_urls: dict[str, str] = {}
-        # The action whose outcome is worked out on the next step.
-        self._pending_outcome: Optional[tuple[Action, str, bool]] = None
-        # Checks dropped because the page they name turned out not to exist.
-        self._dropped_checks: list[str] = []
+        # One sub-goal at a time against the live browser, and the bookkeeping
+        # that goes with it: see core/step_runner.py.
+        self.steps = StepRunner(self)
 
         # One receipt per finished sub-goal, chained so later edits are detectable
         self.receipts = ReceiptLog()
@@ -502,10 +491,7 @@ class Orchestrator:
         memory_hits: int,
     ) -> AgentResult:
         try:
-            self._reported_blocks.clear()
-            self._dead_urls.clear()
-            self._dropped_checks.clear()
-            self._pending_outcome = None
+            self.steps.start_run()
 
             # 1. Launch browser
             await self.browser.start(start_url)
@@ -551,7 +537,7 @@ class Orchestrator:
                 await self._ui_emit("on_subgoal_start", sub_goal)
 
                 steps_before = self.state.step_count
-                success = await self._execute_subgoal(sub_goal)
+                success = await self.steps.run(sub_goal)
                 self._goal_steps[id(sub_goal)] = self.state.step_count - steps_before
                 await self._seal_receipt()
 
@@ -603,7 +589,7 @@ class Orchestrator:
                 violations=self._violations(),
                 values=dict(self.state.values),
                 receipts=list(self.receipts.receipts),
-                actions=self._action_trail(),
+                actions=self.steps.action_trail(),
                 **self._briefing_fields(),
             )
 
@@ -627,7 +613,7 @@ class Orchestrator:
                 violations=self._violations(),
                 values=dict(self.state.values),
                 receipts=list(self.receipts.receipts),
-                actions=self._action_trail(),
+                actions=self.steps.action_trail(),
                 **self._briefing_fields(),
             )
         finally:
@@ -635,322 +621,6 @@ class Orchestrator:
                 self.display.stop()
             await self.mcp.stop()
             await self.browser.close()
-
-    async def _execute_subgoal(self, sub_goal) -> bool:
-        """Run the Observe → Reflect → Act loop for a single sub-goal."""
-        # Models that read pages see {{$name}} references filled in; the plan keeps
-        # the references, so filled-in text never flows back to the planner.
-        goal_view = self._render_goal(sub_goal)
-        self._goal_violations_start = len(self.enforcer.violations) if self.enforcer else 0
-        self._goal_network_start = self.browser.network.mark()
-        self._goal_start_url = self.browser.current_url
-        self._last_receipt = None
-        self.safety.reset_counter()
-        self.stuck_detector.reset()
-        # Accumulated reflections: persist across multiple stuck-then-retry cycles
-        # so the model never loses the diagnostic history of this sub-goal.
-        reflections: list[str] = []
-        went_back_from_nothing = False
-        proven_at_start = await self._cheap_checks(sub_goal)
-
-        proven, self._proven_by_skip = self._proven_by_skip is sub_goal, None
-        if (proven or await self._already_there(sub_goal)) and await self._verify(
-            sub_goal, goal_view, self.state.current_observation
-        ):
-            logger.info("subgoal_already_met", id=sub_goal.id)
-            return True
-
-        for attempt in range(sub_goal.max_attempts):
-            sub_goal.attempts = attempt + 1
-            action_count_this_attempt = 0
-            max_actions = self.config.safety.max_actions_per_subgoal
-
-            while action_count_this_attempt < max_actions and not self.state.is_over_budget:
-                self.state.step_count += 1
-                action_count_this_attempt += 1
-
-                await self._ui_wait_if_paused()
-
-                if self.enforcer and self.enforcer.mandate.is_expired():
-                    raise MandateExpiredError("Mandate expired before the task finished")
-
-                # --- OBSERVE ---
-                dom_mode = self.config.agent.dom_mode or \
-                           self.config.agent.screenshot_mode == "dom_only"
-                include_screenshot = not dom_mode
-                observation = await self.browser.observer.observe(
-                    include_screenshot=include_screenshot,
-                    extract_dom=dom_mode,
-                )
-                if self.enforcer:
-                    observation = self.enforcer.redact_observation(observation)
-                self.state.current_observation = observation
-                if observation.url.startswith(("http://", "https://")):
-                    self._visited_origins.add(origin_of(observation.url))
-                await self._ui_emit("on_observation", observation)
-
-                # --- WHAT DID THE LAST ACTION DO? ---
-                # The executor used to see only what it had tried, never what came
-                # of it, so nothing stopped it making the same guess three times.
-                if self._pending_outcome:
-                    last, before_url, ok = self._pending_outcome
-                    last.outcome = await self._describe_outcome(last, before_url, ok, observation)
-                    self._pending_outcome = None
-
-                # --- EVIDENCE THAT POINTS AT A PAGE THAT ISN'T THERE ---
-                # The planner can't see pages, so a url it writes is either from
-                # the task, the start page, or invented — and an invented one is
-                # sometimes right (/wiki/Mount_Everest) and sometimes not
-                # (/speakers/2026). Code can't tell in advance, but the moment the
-                # browser proves the page doesn't exist, the check can never pass.
-                # Drop it and carry on with the page that does exist, rather than
-                # bouncing between a check it can't meet and a URL it's refused.
-                for check, dead in self._unreachable_checks(sub_goal):
-                    why = self._dead_urls.get(dead.rstrip("/"), "doesn't exist")
-                    logger.warning("evidence_url_is_dead", id=sub_goal.id, url=dead)
-                    sub_goal.evidence = [c for c in sub_goal.evidence if c is not check]
-                    goal_view.evidence = [c for c in goal_view.evidence if c.describe() != check.describe()]
-                    self._dropped_checks.append(f"{check.describe()} ({dead} {why})")
-                    reflections.append(
-                        f"Ignore {dead}: it {why}. That page is not where this step gets "
-                        "finished — work with the page you're on."
-                    )
-
-                # --- A PAGE WITH NOTHING ON IT ---
-                # A guessed URL can land on a page with no elements and no text,
-                # and the executor then picks elements that aren't there for the
-                # rest of its budget: 35 steps of it in live run 28. Go back once,
-                # and if that isn't better, end the attempt so the plan can change.
-                # Only without a screenshot: a vision model can work a page that
-                # is all canvas or image, where there is nothing to read or click.
-                if dom_mode and observation.is_empty:
-                    logger.warning("empty_page", url=observation.url)
-                    if went_back_from_nothing:
-                        reflections.append(
-                            f"{observation.url} has nothing on it, and going back didn't help. "
-                            "The URL is probably wrong."
-                        )
-                        break
-                    went_back_from_nothing = True
-                    await self.browser.execute(Action(action=ActionType.GO_BACK))
-                    self.state.action_history.append(
-                        Action(action=ActionType.GO_BACK, reason="Nothing on the page")
-                    )
-                    continue
-
-                # --- ALREADY PROVEN? ---
-                # The executor kept acting after a sub-goal was met: on the
-                # practice site it signed in, clicked on into the menu, and
-                # logged itself back out (live run 28). Checked here, on a page
-                # that has settled, and only when a check that was failing when
-                # this goal began now passes — otherwise a goal whose url
-                # already matched would finish without doing its work.
-                if proven_at_start is not None and action_count_this_attempt > 1:
-                    now = await self._cheap_checks(sub_goal)
-                    if now and all(now.values()) and any(
-                        not was for name, was in proven_at_start.items() if name in now
-                    ):
-                        logger.info("subgoal_proven_mid_step", id=sub_goal.id)
-                        if await self._verify(sub_goal, goal_view, observation):
-                            return True
-                        proven_at_start = None  # a value is missing; let it work on
-
-                # --- LOGIN DETECTION ---
-                if observation.login_detected and not getattr(self, "_login_alerted", False):
-                    self._login_alerted = True
-                    logger.info("login_required", url=observation.url)
-                    if self.ui:
-                        await self.ui.on_login_required(observation.url)
-                    else:
-                        logger.warning("login_page_detected_no_ui")
-                elif not observation.login_detected:
-                    self._login_alerted = False
-
-                # --- THINK: executor with visual grounding + reflection context ---
-                # Pass at most the last 2 reflections so the model has full context
-                # of why previous attempts failed, even across multiple stuck cycles.
-                combined_reflection = "\n\n".join(reflections[-2:]) if reflections else None
-                action = await self.executor.decide(
-                    observation=observation,
-                    sub_goal=goal_view,
-                    # Long enough to still show a page that led nowhere: at five
-                    # lines, three refusals pushed the reason off the end.
-                    action_history_text=self.state.action_history_summary(n=10),
-                    actions_taken_this_subgoal=action_count_this_attempt - 1,
-                    reflection=combined_reflection,
-                    mcp_tools=self.mcp.tools if self.mcp.has_tools else None,
-                    data_placeholders=self.enforcer.placeholder_names() if self.enforcer else None,
-                    briefing=self.context.for_executor() if self.context else None,
-                )
-
-                # --- MCP TOOL CALL ---
-                if action.action == ActionType.MCP_TOOL:
-                    tool_name = action.mcp_tool_name or ""
-                    tool_args = action.mcp_tool_args or {}
-                    logger.info("mcp_tool_call", tool=tool_name, args=str(tool_args)[:80])
-                    result = await self.mcp.call_tool(tool_name, tool_args)
-                    await self._ui_emit("on_action", action, self.state.step_count)
-                    # Record in action history so the executor can see the result
-                    self.state.action_history.append(
-                        Action(
-                            action=ActionType.MCP_TOOL,
-                            mcp_tool_name=tool_name,
-                            mcp_tool_args=tool_args,
-                            reason=result[:500],
-                        )
-                    )
-                    continue
-
-                # --- TERMINAL: done ---
-                if action.action == ActionType.DONE:
-                    self.state.action_history.append(action)
-                    await self._ui_emit("on_action", action, self.state.step_count)
-                    if await self._verify(sub_goal, goal_view, observation):
-                        return True
-                    break
-
-                # --- ELEMENT ID VALIDATION ---
-                # Catch hallucinated or stale element IDs before they cause a
-                # 30-second Playwright timeout that wastes the step budget.
-                actions_needing_element = {
-                    ActionType.CLICK, ActionType.TYPE,
-                    ActionType.SELECT, ActionType.HOVER,
-                }
-                if action.action in actions_needing_element and action.element_id is not None:
-                    valid_ids = {el.id for el in observation.elements}
-                    if action.element_id not in valid_ids:
-                        logger.warning(
-                            "invalid_element_id",
-                            element_id=action.element_id,
-                            valid_count=len(valid_ids),
-                        )
-                        self.state.action_history.append(
-                            Action(
-                                action=ActionType.WAIT,
-                                seconds=1,
-                                reason=f"element_id {action.element_id} not on page (valid: {sorted(valid_ids)[:10]})",
-                            )
-                        )
-                        continue
-
-                # --- A URL THAT ALREADY LED NOWHERE ---
-                # Live, the executor navigated to a made-up /2027 page three
-                # times in one run. It gets told once; after that it's refused,
-                # so the budget goes on the page it actually has.
-                if action.action == ActionType.NAVIGATE and action.url:
-                    why = self._dead_urls.get(action.url.rstrip("/"))
-                    if why:
-                        logger.warning("dead_url_refused", url=action.url)
-                        self.state.action_history.append(Action(
-                            action=ActionType.WAIT,
-                            reason=f"{action.url} was already tried and {why}. Use the page you're on.",
-                        ))
-                        continue
-
-                # --- NOTHING TO ENTER ---
-                # Typing with no text clears the field and costs a step. Five of
-                # Google Flights' forty steps went that way in live run 27.
-                if action.action in (ActionType.TYPE, ActionType.SELECT) and not (action.text or "").strip():
-                    logger.warning("type_without_text", element_id=action.element_id)
-                    self.state.action_history.append(Action(
-                        action=ActionType.WAIT,
-                        reason=f"{action.action.value} needs text to enter; nothing was given",
-                    ))
-                    continue
-
-                # --- MANDATE CHECK (deterministic; the model can't argue past it) ---
-                if self.enforcer:
-                    violation = self.enforcer.check_action(action, observation.url)
-                    if violation:
-                        await self._report_violation(action, violation)
-                        continue
-
-                # --- SAFETY CHECK ---
-                verdict = self.safety.check(action, observation)
-                if not verdict.allowed:
-                    logger.warning("action_blocked", reason=verdict.reason)
-                    await self._ui_emit("on_safety_flag", action, verdict.reason)
-                    self.state.action_history.append(
-                        Action(action=ActionType.WAIT, reason=f"Blocked: {verdict.reason}")
-                    )
-                    continue
-
-                if verdict.needs_confirmation and self._mandate_approves(action, observation.url):
-                    # The user already approved entering this data on this site, in the mandate.
-                    logger.info("confirmation_covered_by_mandate", reason=verdict.reason)
-                elif verdict.needs_confirmation:
-                    logger.warning("action_needs_confirmation", reason=verdict.reason)
-                    await self._ui_emit("on_safety_flag", action, verdict.reason)
-                    confirmed = await self._request_confirmation(action, verdict.reason)
-                    if not confirmed:
-                        self.state.action_history.append(
-                            Action(action=ActionType.WAIT, reason="User declined action")
-                        )
-                        continue
-
-                # --- ACT ---
-                action_desc = action.action.value
-                if action.element_id:
-                    action_desc += f"(el={action.element_id})"
-                if action.text:
-                    action_desc += f' "{action.text[:25]}"'
-                logger.step(self.state.step_count, self.state.max_steps, action_desc)
-                if not self.ui:
-                    self.display.update_action(
-                        self.state.step_count, action_desc, observation.url
-                    )
-                await self._ui_emit("on_action", action, self.state.step_count)
-                # Give the controller the current observation so it can use
-                # bbox coordinates and stable selectors instead of data-wl-id.
-                self.browser.last_observation = observation
-                success = await self.browser.execute(action)
-                self.state.action_history.append(action)
-                await self._ui_emit("on_action_result", success)
-
-                if self.enforcer:
-                    await self._enforce_after_action(action)
-
-                if not success:
-                    logger.warning("action_execution_failed", action=action.action.value)
-
-                # What it did is worked out at the top of the next step, once the
-                # page has landed: read here, a click's navigation hasn't
-                # committed yet and every one of them looks like "no change".
-                self._pending_outcome = (action, observation.url, success)
-
-                # --- STUCK DETECTION with smarter tracking ---
-                self.stuck_detector.record(
-                    action.action.value,
-                    action.element_id,
-                    observation.url,
-                )
-                if self.stuck_detector.is_stuck():
-                    logger.warning("stuck_detected", attempt=attempt + 1)
-                    # Reflect on why we're stuck and accumulate the diagnosis.
-                    # We keep reflections across attempts so the model always has
-                    # the full history of what went wrong in this sub-goal.
-                    try:
-                        new_reflection = await self.executor.reflect(
-                            observation=observation,
-                            sub_goal=goal_view,
-                            failed_actions=self.stuck_detector.get_failed_actions(),
-                        )
-                        reflections.append(new_reflection)
-                        logger.info("reflection_ready", total=len(reflections), text=new_reflection[:80])
-                    except Exception:
-                        pass  # reflection is optional; continue without it
-                    self.stuck_detector.reset()
-                    break
-
-            # After action budget exhausted, check if sub-goal is actually done
-            observation = await self.browser.observer.observe(include_screenshot=True)
-            if self.enforcer:
-                observation = self.enforcer.redact_observation(observation)
-            self.state.current_observation = observation
-            if await self._verify(sub_goal, goal_view, observation):
-                return True
-
-        return False
 
     async def _already_there(self, sub_goal: SubGoal) -> bool:
         """Whether a sub-goal that only opens a page is already met, before any action.
@@ -983,7 +653,7 @@ class Orchestrator:
             events=[],
             values=dict(self.state.values),
             page_status=self.browser.page_status,
-            page_fields=await self._page_fields(),
+            page_fields=await self.browser.field_values(),
         )
         return all(evaluate(check, context).passed for check in checks)
 
@@ -1018,50 +688,8 @@ class Orchestrator:
         url_checks = [check for check in sub_goal.evidence if check.type == "url"]
         return all(evaluate(check, context).passed for check in url_checks)
 
-    def _mandate_approves(self, action: Action, page_url: str) -> bool:
-        """Whether the mandate already approved this action: entering only granted
-        data where allowed. select counts too, since it types into comboboxes."""
-        if not self.enforcer or action.action not in (ActionType.TYPE, ActionType.SELECT) or not action.text:
-            return False
-        return self.enforcer.approves_entry(action.text, page_url)
-
     def _violations(self) -> list[Violation]:
         return list(self.enforcer.violations) if self.enforcer else []
-
-    async def _report_violation(self, action: Action, violation: Violation, count: int = 1) -> None:
-        """Surface a blocked action in the UI and in the executor's history."""
-        detail = violation.detail + (f" ({count} times)" if count > 1 else "")
-        await self._ui_emit("on_safety_flag", action, f"Mandate: {detail}")
-        self.state.action_history.append(
-            Action(action=ActionType.WAIT, reason=f"Blocked by mandate: {detail}")
-        )
-
-    async def _enforce_after_action(self, action: Action) -> None:
-        """Report what the network layer blocked during the action, and step off
-        any page that ended up outside the mandate anyway."""
-        if action.action in (ActionType.CLICK, ActionType.NAVIGATE, ActionType.SELECT, ActionType.GO_BACK):
-            # A click's navigation reaches the network layer a few ms after the
-            # click returns; wait for the verdict so a block is handled on this step.
-            await self.enforcer.wait_for_pending(timeout=0.25)
-        blocked = self.enforcer.drain()
-        # A page can repeat the same blocked request many times; tell the executor once.
-        for violation, count in collapse_violations(blocked):
-            # And a single-page app repeats it on every step: Google Flights' own
-            # telemetry filled half the executor's history in live run 27. Every
-            # block is still recorded and counted; the executor hears each one once.
-            signature = f"{violation.kind.value} {violation.method or ''} {violation.url.split('?')[0]}"
-            if signature in self._reported_blocks:
-                continue
-            self._reported_blocks.add(signature)
-            await self._report_violation(action, violation, count)
-        if any(v.main_frame for v in blocked):
-            # A blocked navigation leaves Chromium's error page behind; put the
-            # agent back on the page it was working on.
-            await self.browser.recover_from_blocked_navigation()
-        violation = self.enforcer.check_page(self.browser.current_url)
-        if violation:
-            await self._report_violation(action, violation)
-            await self.browser.leave_page()
 
     def _render_goal(self, sub_goal: SubGoal) -> SubGoal:
         """Copy of a sub-goal with {{$name}} references filled in for the executor."""
@@ -1114,7 +742,7 @@ class Orchestrator:
                     events=self.browser.network.since(self._goal_network_start),
                     values={**self.state.values, **read},
                     page_status=self.browser.page_status,
-                    page_fields=await self._page_fields(),
+                    page_fields=await self.browser.field_values(),
                 )
                 checks = [evaluate(check, context) for check in sub_goal.evidence]
                 achieved = all(check.passed for check in checks)
@@ -1353,131 +981,9 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             "plan_issues": list(self._plan_issues),
             # Proof that was given up on, so a reader knows the step fell back
             # to a model's judgement and why.
-            "problems": [f"Evidence dropped: {dropped}" for dropped in self._dropped_checks],
+            "problems": [f"Evidence dropped: {dropped}" for dropped in self.steps._dropped_checks],
         }
 
-    async def _describe_outcome(
-        self, action: Action, before_url: str, success: bool, now: Observation
-    ) -> str:
-        """One line on what an action did, for the executor's own history.
-
-        Only what code can see: where the page went, what it answered, and
-        whether there is anything on it. A navigation that led nowhere is
-        remembered, so the same guess can't be made twice.
-        """
-        if not success:
-            return "the browser couldn't do it"
-
-        url, status = now.url, self.browser.page_status
-        moved = url != before_url
-        if action.action in (ActionType.NAVIGATE, ActionType.CLICK, ActionType.GO_BACK):
-            if status is not None and status >= 400:
-                self._remember_dead(action, url, f"answered {status}")
-                return f"{url} answered {status}"
-            if now.is_empty:
-                self._remember_dead(action, url, "had nothing on it")
-                return f"went to {url}, which has nothing on it"
-            if not moved:
-                return "the page didn't change"
-            return f"went to {url}"
-
-        if action.action in (ActionType.TYPE, ActionType.SELECT) and action.text:
-            held = await self.browser.field_values()
-            entered = any(_normalise(action.text) in _normalise(value) for value in held)
-            if not entered:
-                return "the field didn't keep it — it may need choosing from a list"
-            return "the field holds it" + (f", and the page moved to {url}" if moved else "")
-
-        return f"the page moved to {url}" if moved else ""
-
-    def _unreachable_checks(self, sub_goal: SubGoal) -> list[tuple[EvidenceCheck, str]]:
-        """Url checks pointing at pages the browser has proved don't exist."""
-        found = []
-        for check in sub_goal.evidence:
-            if check.type != "url":
-                continue
-            for dead in self._dead_urls:
-                if url_matches(dead, check.pattern):
-                    found.append((check, dead))
-                    break
-        return found
-
-    def _remember_dead(self, action: Action, landed: str, why: str) -> None:
-        """A URL that led nowhere, by what was asked for and where it ended up."""
-        for url in {action.url, landed}:
-            if url:
-                self._dead_urls[url.rstrip("/")] = why
-
-    async def _cheap_checks(self, sub_goal: SubGoal) -> Optional[dict[str, bool]]:
-        """How a sub-goal's code-checkable evidence stands, without a model call.
-
-        Value checks are left out: reading a value costs a model call, so those
-        wait for the executor to say it's done. None when there's nothing here
-        that code can settle.
-        """
-        checks = [check for check in sub_goal.evidence if check.type in ("url", "text")]
-        if not checks:
-            return None
-        context = EvidenceContext(
-            page_url=self.browser.current_url,
-            page_text=await self.browser.page_text(),
-            events=self.browser.network.since(self._goal_network_start),
-            values=dict(self.state.values),
-            page_status=self.browser.page_status,
-            page_fields=await self._page_fields(),
-        )
-        return {check.describe(): evaluate(check, context).passed for check in checks}
-
-    async def _page_fields(self) -> list[str]:
-        """What the page's fields hold now, for checks about what was entered."""
-        return await self.browser.field_values()
-
-    def _action_trail(self) -> list[str]:
-        """One line per action taken, for reading a failed run afterwards.
-
-        Blocked and declined actions are in here too, as the WAIT entries the
-        executor was given, which is usually what a stuck run needs explaining.
-        Text is redacted, since a typed action can carry a granted value.
-        """
-        return [
-            f"{step}. {self._action_line(act)}"
-            for step, act in enumerate(self.state.action_history, start=1)
-        ]
-
-    def _safe(self, value: str) -> str:
-        return (self.enforcer.redact(value) if self.enforcer else value)[:120]
-
-    def _action_line(self, act: Action) -> str:
-        parts = [act.action.value]
-        if act.element_id is not None:
-            parts.append(f"(el={act.element_id})")
-        if act.mcp_tool_name:
-            parts.append(act.mcp_tool_name)
-        if act.text:
-            parts.append(f'"{self._safe(act.text)}"')
-        if act.url:
-            parts.append(self._safe(act.url))
-        if act.reason:
-            parts.append(f"({self._safe(act.reason)})")
-        if act.outcome:
-            parts.append(f"→ {self._safe(act.outcome)}")
-        return " ".join(parts)
-
-    async def _request_confirmation(self, action: Action, reason: str) -> bool:
-        """Request user confirmation for a high-risk action.
-
-        When the UI is connected, shows an interactive modal.
-        In CLI/headless mode, auto-declines for safety.
-        """
-        if self.ui:
-            return await self.ui.request_confirmation(action, reason)
-        # No UI — auto-decline in safety-first mode
-        logger.info("auto_declining_risky_action", reason=reason)
-        return False
-
-
-def _normalise(text: str) -> str:
-    return " ".join(text.split()).casefold()
 
 
 class AgentResult:

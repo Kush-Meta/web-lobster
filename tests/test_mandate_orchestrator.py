@@ -126,9 +126,9 @@ async def test_the_executor_hears_about_a_repeated_block_once(sites):
     )
 
     action = Action(action=ActionType.CLICK, element_id=1)
-    await orchestrator._enforce_after_action(action)
+    await orchestrator.steps._enforce_after_action(action)
     orchestrator.enforcer.drain = lambda: [later]  # same endpoint, new query string
-    await orchestrator._enforce_after_action(action)
+    await orchestrator.steps._enforce_after_action(action)
 
     blocked = [act for act in orchestrator.state.action_history if "Blocked by mandate" in (act.reason or "")]
     assert len(blocked) == 1
@@ -136,7 +136,7 @@ async def test_the_executor_hears_about_a_repeated_block_once(sites):
     # A different endpoint is news, and is reported.
     other = noise.model_copy(update={"url": f"{a.origin}/_/batchexecute", "detail": "POST /_/batchexecute"})
     orchestrator.enforcer.drain = lambda: [other]
-    await orchestrator._enforce_after_action(action)
+    await orchestrator.steps._enforce_after_action(action)
     blocked = [act for act in orchestrator.state.action_history if "Blocked by mandate" in (act.reason or "")]
     assert len(blocked) == 2
 

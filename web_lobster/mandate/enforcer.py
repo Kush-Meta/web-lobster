@@ -111,6 +111,18 @@ def worth_reporting(violation: Violation) -> bool:
     return not sent_by_page_script(violation)
 
 
+def collapse_violations(violations: list[Violation]) -> list[tuple[Violation, int]]:
+    """Group repeats of the same blocked request, keeping the first of each and a count."""
+    groups: dict[tuple, list] = {}
+    for violation in violations:
+        key = (violation.kind, violation.detail)
+        if key in groups:
+            groups[key][1] += 1
+        else:
+            groups[key] = [violation, 1]
+    return [(violation, count) for violation, count in groups.values()]
+
+
 class MandateViolationError(RuntimeError):
     """A browser operation would have broken the mandate."""
 
