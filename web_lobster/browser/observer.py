@@ -16,6 +16,7 @@ from typing import Optional
 from playwright.async_api import Page
 
 from web_lobster.core.schemas import BoundingBox, Observation, PageElement
+from web_lobster.browser.affordances import takes
 from web_lobster.core.config import BrowserConfig
 from web_lobster.browser.annotator import Annotator
 from web_lobster.utils.logging import get_logger
@@ -114,6 +115,20 @@ EXTRACT_ELEMENTS_JS = """
             tag: el.tagName.toLowerCase(),
             input_type: tag === 'input' ? (el.type || 'text').toLowerCase() : null,
             href: el.href || null,
+            // What it takes to commit a value here is decided in Python, from
+            // these: see browser/affordances.py.
+            autocomplete: el.getAttribute('aria-autocomplete'),
+            in_dialog: !!el.closest('[role="dialog"], dialog'),
+            in_search_form: (() => {
+                const form = el.closest('form');
+                if (!form) return false;
+                const searchish = (el.type || '') === 'search'
+                    || (el.getAttribute('role') || '') === 'searchbox'
+                    || /search|query|q$/i.test(el.name || '')
+                    || /search/i.test(el.getAttribute('aria-label') || '');
+                return searchish || (form.getAttribute('role') || '') === 'search'
+                    || /search/i.test(form.getAttribute('action') || '');
+            })(),
             stable_selector: stableSelector,
             is_visible: inViewport,
             is_enabled: !el.disabled,
@@ -209,16 +224,37 @@ class Observer:
         self.annotator = Annotator()
 
     async def observe(self, include_screenshot: bool = True,
-                      extract_dom: bool = False) -> Observation:
-        """Capture the current page state.
+                      extract_dom: bool = False, settle: bool = True) -> Observation:
+        """Capture the current page state, once the page has something on it.
 
-        Args:
-            include_screenshot: Whether to take a screenshot.
-            extract_dom: Whether to run the rich DOM extraction for DOM mode.
+        With settle on — the default, and what everything above should want — a
+        page that has rendered nothing yet gets config.settle_seconds to finish
+        before the observation is handed over. That used to be three separate
+        waits bolted onto the agent loop, each added after a live run mistook a
+        slow page for a dead one.
 
-        Returns:
-            An Observation with elements, screenshots, and metadata.
+        An observation that comes back still empty carries rendering=True, so a
+        caller can tell "not finished" from "nothing there".
         """
+        observation = await self._look(include_screenshot, extract_dom)
+        if not settle or not observation.is_empty:
+            return observation
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.settle_seconds
+        while loop.time() < deadline:
+            await asyncio.sleep(0.4)
+            observation = await self._look(include_screenshot, extract_dom)
+            if not observation.is_empty:
+                logger.info("page_settled_late", url=observation.url,
+                            elements=len(observation.elements))
+                return observation
+        logger.warning("page_never_rendered", url=self.page.url)
+        return observation.model_copy(update={"rendering": True})
+
+    async def _look(self, include_screenshot: bool = True,
+                    extract_dom: bool = False) -> Observation:
+        """One look at the page, however finished it happens to be."""
         logger.debug("observing", url=self.page.url)
 
         # 1. Inject element tagging and extract metadata
@@ -243,6 +279,13 @@ class Observer:
                         tag=el.get("tag"),
                         input_type=el.get("input_type"),
                         href=el.get("href"),
+                        takes=takes(
+                            role=el["role"], tag=el.get("tag"),
+                            input_type=el.get("input_type"), href=el.get("href"),
+                            label=el["label"], autocomplete=el.get("autocomplete"),
+                            in_dialog=el.get("in_dialog", False),
+                            in_search_form=el.get("in_search_form", False),
+                        ).value,
                         stable_selector=el.get("stable_selector"),
                         is_visible=el.get("is_visible", True),
                         is_enabled=el.get("is_enabled", True),

@@ -27,6 +27,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from web_lobster.core.schemas import Action, ActionType, Observation, PageElement, ScrollDirection
 from web_lobster.core.config import BrowserConfig
+from web_lobster.browser.affordances import Takes, takes
 from web_lobster.browser.observer import Observer
 from web_lobster.mandate.enforcer import MandateEnforcer, MandateViolationError
 from web_lobster.mandate.schema import ensure_scheme
@@ -108,6 +109,28 @@ _CLEAR_FOCUSED_INPUT_JS = """
 
 # True when the focused field completes text as you type (aria-autocomplete), where
 # key-by-key typing races the browser's own completions.
+_AFFORDANCE_SIGNALS_JS = """(id) => {
+  const el = document.querySelector(`[data-wl-id="${id}"]`);
+  if (!el) return null;
+  const tag = el.tagName.toLowerCase();
+  const form = el.closest('form');
+  const searchish = (el.type || '') === 'search'
+    || (el.getAttribute('role') || '') === 'searchbox'
+    || /search|query|q$/i.test(el.name || '')
+    || /search/i.test(el.getAttribute('aria-label') || '');
+  return {
+    role: el.getAttribute('role') || tag,
+    tag: tag,
+    input_type: tag === 'input' ? (el.type || 'text').toLowerCase() : null,
+    href: el.href || null,
+    label: el.getAttribute('aria-label') || el.placeholder || (el.innerText || '').slice(0, 40),
+    autocomplete: el.getAttribute('aria-autocomplete'),
+    in_dialog: !!el.closest('[role="dialog"], dialog'),
+    in_search_form: !!form && (searchish
+      || (form.getAttribute('role') || '') === 'search'
+      || /search/i.test(form.getAttribute('action') || '')),
+  };
+}"""
 _OPEN_DIALOGS_JS = """() => [...document.querySelectorAll('[role=dialog], dialog')]
   .filter(el => el.offsetParent).length"""
 
@@ -210,20 +233,20 @@ class BrowserController:
 
         try:
             match action.action:
-                case ActionType.CLICK:
+                case ActionType.CLICK | ActionType.PRESS | ActionType.OPEN:
                     await self._click(action.element_id)
                 case ActionType.TRIPLE_CLICK:
                     await self._triple_click(action.element_id)
-                case ActionType.TYPE:
-                    await self._type(action.element_id, action.text or "")
+                case ActionType.TYPE | ActionType.FILL:
+                    await self._enter(action.element_id, action.text or "")
                 case ActionType.SCROLL:
                     await self._scroll(action.direction or ScrollDirection.DOWN)
                 case ActionType.NAVIGATE:
                     await self._navigate(action.url or "")
                 case ActionType.WAIT:
                     await asyncio.sleep(action.seconds or 2)
-                case ActionType.SELECT:
-                    await self._select(action.element_id, action.text or "")
+                case ActionType.SELECT | ActionType.CHOOSE:
+                    await self._enter(action.element_id, action.text or "", choosing=True)
                 case ActionType.HOVER:
                     await self._hover(action.element_id)
                 case ActionType.GO_BACK:
@@ -409,16 +432,45 @@ class BrowserController:
             timeout=self.config.default_timeout * 1000,
         )
 
-    async def _select(self, element_id: Optional[int], text: str) -> None:
-        """Choose an option.
+    async def _enter(self, element_id: Optional[int], text: str, *, choosing: bool = False) -> None:
+        """Put a value where it will stay, however this element commits one.
 
-        A real <select> uses the browser's own picker. Anything else is a custom
-        combobox (Google Flights' city fields are role="combobox" widgets), where
-        select_option fails: those are typed into, and the suggestion is taken with
-        Enter. A live run spent its whole step budget failing on that.
+        The executor's verb is a hint, not the decision. What actually commits a
+        value belongs to the element, and the observer has already worked that
+        out (browser/affordances.py): a search box keeps what you type, a city
+        combobox keeps nothing until a suggestion is chosen, a date box keeps
+        nothing until its picker is confirmed.
+
+        This is the same gesture that was tried once as "make type commit
+        everything" and reverted, because it cost the Everest task every run it
+        had been winning. The difference is that it is now scoped by what the
+        page says the element is: Wikipedia's search box takes a fill, so
+        nothing about it changes.
         """
         if element_id is None:
-            raise ValueError("select requires element_id")
+            raise ValueError("entering a value requires element_id")
+
+        if await self._takes(element_id) == Takes.CHOOSE.value or choosing:
+            await self._choose(element_id, text)
+        else:
+            await self._type(element_id, text)
+
+    async def _takes(self, element_id: int) -> str:
+        """What this element commits with, from the observation or from the page.
+
+        The observation usually carries it, but the controller should not need
+        to be handed one to know what it is acting on — so it can ask the page.
+        """
+        element = self._find_element(element_id)
+        if element and element.takes:
+            return element.takes
+        try:
+            signals = await self._page.evaluate(_AFFORDANCE_SIGNALS_JS, element_id)
+        except Exception:
+            signals = None
+        return takes(**signals).value if signals else ""
+    async def _choose(self, element_id: Optional[int], text: str) -> None:
+        """Commit a value to something that only accepts a choice."""
         locator = self._page.locator(f'[data-wl-id="{element_id}"]')
         try:
             tag = (await locator.evaluate("el => el.tagName") or "").lower()
@@ -431,13 +483,12 @@ class BrowserController:
             )
             return
 
-        logger.info("select_on_combobox", element_id=element_id)
+        logger.info("choosing", element_id=element_id)
         if await self._type(element_id, text):
-            return  # a dialog took it
+            return  # typing opened a dialog and its Done took the value
         if not await self._take_suggestion():
             # No list appeared: Enter is what these widgets accept otherwise.
             await self._page.keyboard.press("Enter")
-
     async def _take_suggestion(self, attempts: int = 6) -> bool:
         """Click the first suggestion a combobox offers. False when none appears.
 

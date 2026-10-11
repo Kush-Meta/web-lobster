@@ -1,6 +1,9 @@
 # Step 9: rethinking the control architecture
 
-**Status:** proposed, not built. Written 2026-10-10 after five days of live testing produced twenty-three fixes and one uncomfortable pattern.
+**Status:** phases 1 and 2 built, 2026-10-10. Phases 0, 3-5 proposed. Written after five days of live testing produced twenty-three fixes and one uncomfortable pattern.
+
+- **Phase 1 - the environment contract.** `browser/affordances.py` answers *what does this element take?* where the page is. `Observer.observe()` now promises a **settled** page, or flags `rendering`; the three ad-hoc waits bolted onto the agent loop are deleted.
+- **Phase 2 - intents.** `fill`, `choose`, `open`, `press` join the action vocabulary, and the controller picks the gesture from the affordance rather than from the verb. **Naming the wrong verb now costs nothing.**
 
 The security architecture — mandates, planner isolation, evidence, receipts — is doing its job and is externally corroborated. What needs rethinking is everything *around* it: how the agent perceives a page, how it acts on one, and how what it learns while running reaches the decisions that matter.
 
@@ -143,12 +146,54 @@ No rewrite, no long-lived branch. Each phase is one commit, measured before the 
 
 | Phase | What | How it's judged |
 |---|---|---|
-| **0** | Extract the loop into a `StepRunner` with no behaviour change | 354 tests pass unchanged; trials unchanged |
-| **1** | Environment contract: one settled-observation path, `rendering` flag, affordances on elements | The three ad-hoc waits disappear; known tasks unchanged |
-| **2** | Actuator intents, with the executor choosing an intent rather than a keystroke | Google Flights; prediction 1 |
+| **0** | Extract the loop into a `StepRunner` | Deferred on purpose: phases 1 and 2 shrank the loop by giving its concerns homes, which was the actual goal. What's left is worth doing before phase 3 |
+| **1** | ✅ Environment contract: settled observations, `rendering`, affordances | Done. Three ad-hoc waits deleted; 355 tests pass |
+| **2** | ✅ Actuator intents, the gesture chosen from the affordance | Done. See below |
 | **3** | Findings, with visibility, and `adapt` in the plan loop | The dead-URL and unreachable-check branches delete; prediction 2 |
 | **4** | Progress-based budgets, replacing fixed step caps | Median steps down, no success-rate loss |
 | **5** | Findings into memory, so a site's quirks survive the run | Plan reuse finally measurable |
+
+## What phases 1 and 2 actually changed
+
+### The page answers the question now
+
+`takes()` in [`browser/affordances.py`](../../web_lobster/browser/affordances.py) maps what the page says an element *is* onto the gesture that commits a value to it: `open`, `press`, `fill`, `choose`, `toggle`, `confirm`. Checked against every element this week's failures involved:
+
+| Element | Takes |
+|---|---|
+| Google Flights `Where from?` / `Where to?` (combobox, no form) | `choose` |
+| Google Flights `Round trip`, `Economy` | `choose` |
+| Wikipedia `Search Wikipedia` (combobox **in a search form**) | `fill` |
+| saucedemo `Username`, `Password` | `fill` |
+| saucedemo `login-button` (`<input type=submit>`) | `press` |
+| A real `<select>` | `choose` |
+| A native `date` input | `choose` |
+| A dialog's `Done` | `confirm` |
+
+The search-form exception is the load-bearing one. Wikipedia's search box **becomes** `role="combobox"` the moment the controller clicks and clears it, and committing a suggestion there cost the Everest task every run it had been winning. A search box in a form is filled and submitted, because that is what it is for; a city picker keeps nothing until something is chosen.
+
+What can be seen from the page is decided there. What can only be learned by acting — a picker that appears after the first keystroke — stays in the actuator, which presses a dialog's Done when typing opened one.
+
+### A settled page is a promise, not a patch
+
+`Observer.observe()` gives back a page with something on it, waiting up to `browser.settle_seconds` (6 s) for one that has rendered nothing yet, and flagging `rendering=True` if it never does. `Observation.is_empty` replaces a module-level predicate in the orchestrator. Three separate waits — the loop's, the value reader's, and the outcome describer's — were deleted; each had been added after a live run mistook a slow page for a dead one.
+
+### Naming the wrong verb costs nothing
+
+`ActionType` gained `fill`, `choose`, `open`, `press`; `type`, `select` and `click` remain and map onto them. The controller's `_enter()` is now the single place that knows how a value is committed, and it asks the affordance rather than trusting the verb:
+
+```python
+if await self._takes(element_id) == Takes.CHOOSE.value or choosing:
+    await self._choose(element_id, text)   # type, then take the suggestion or confirm the dialog
+else:
+    await self._type(element_id, text)     # it keeps what it is given
+```
+
+This is the same gesture that was tried once as *make `type` commit everything* and reverted, because it cost Everest 3 of 3. The difference is scope: it now applies to what the page says is a choice, and Wikipedia's search box isn't one. `tests/test_select_action.py` pins both halves — `type` into a combobox commits, `type` into a search box in a form does not.
+
+### What the loop lost
+
+Three waits and one predicate, and — more to the point — the *class* of fix. The next "it picked the wrong verb" bug is a line in `takes()`, not a branch in the loop.
 
 ## What this does not fix
 

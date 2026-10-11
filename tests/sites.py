@@ -112,6 +112,18 @@ def build_sites() -> tuple[Site, Site]:
             '</script>'
         ),
         # A plain field, for contrast: no autocomplete, so typing stays key by key.
+        # Wikipedia's shape: a search box in a form that offers suggestions.
+        # Typing must be enough here — committing a suggestion on this is what
+        # cost the Everest task 3 of 3 runs when it was tried everywhere.
+        "/searchbox": html(
+            '<form action="/results" role="search">'
+            '<input name="search" role="combobox" aria-autocomplete="list" aria-label="Search the site">'
+            '</form><ul><li role="option">Mount Everest</li>'
+            '<li role="option">Mount Everest in 2017</li></ul><p id="chosen"></p>'
+            '<script>document.querySelectorAll("[role=option]").forEach(o => '
+            ' o.addEventListener("click", () => {'
+            '   document.getElementById("chosen").textContent = "Chosen: " + o.textContent; }));</script>'
+        ),
         "/plainfield": html(
             '<input aria-label="Notes">'
             '<script>window.__events = [];'

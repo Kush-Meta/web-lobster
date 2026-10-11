@@ -42,6 +42,10 @@ class BrowserConfig(BaseModel):
     default_timeout: float = 30.0    # seconds
     screenshot_quality: int = 80     # JPEG quality for screenshots
     slow_mo: float = 0.0            # ms delay between actions (for debugging)
+    # How long to let a page that has rendered nothing yet finish before handing
+    # it over. jaipurliteraturefestival.org shows its first element at 3.5s, and
+    # judging it earlier wrote the right page off as dead.
+    settle_seconds: float = 6.0
 
 
 class SafetyConfig(BaseModel):

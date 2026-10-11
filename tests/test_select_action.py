@@ -127,21 +127,22 @@ async def test_elements_under_an_overlay_are_not_offered(sites):
     assert [el.label for el in observation.elements] == ["City"]  # only the one on top
 
 
-async def test_typing_into_an_autocomplete_leaves_it_uncommitted(sites):
+async def test_a_search_box_in_a_form_is_only_filled(sites):
     a, _ = sites
-    # Only select takes the suggestion. Making type take it too was measured over
-    # nine live runs: it cost Wikipedia searches every run they had been winning
-    # (0 of 3 Everest runs done, against 1 of 1 without it) and still didn't get
-    # Google Flights to search, because a wrong suggestion is worse than none.
-    controller = await _open(a, "/combobox")
+    # The guarantee that replaced "type never commits". Wikipedia's search box
+    # is a combobox with suggestions, and taking one of them turned every
+    # search into a jump to the site's first guess: 0 of 3 Everest runs done.
+    # Because it sits in a search form, the page says it takes a fill.
+    controller = await _open(a, "/searchbox")
     try:
-        await controller.execute(Action(
-            action=ActionType.TYPE, element_id=await _element_id(controller, "City"), text="Tokyo",
-        ))
-        assert "Chosen" not in await controller.page_text()
+        [box] = [el for el in (await controller.observer.observe(
+            include_screenshot=False, extract_dom=True)).elements if el.input_type]
+        assert box.takes == "fill"
+        await controller.execute(Action(action=ActionType.TYPE, element_id=box.id, text="Mount Everest"))
+        assert await controller._page.input_value("input") == "Mount Everest"
+        assert "Chosen" not in await controller.page_text()   # no suggestion taken
     finally:
         await controller.close()
-
 
 async def test_typing_confirms_the_dialog_it_opened(sites):
     a, _ = sites
@@ -159,15 +160,34 @@ async def test_typing_confirms_the_dialog_it_opened(sites):
     assert held == "Thu Oct 15"  # the site's own wording, kept because Done was pressed
 
 
-async def test_typing_confirms_nothing_when_no_dialog_opened(sites):
+async def test_the_affordance_decides_the_gesture_not_the_verb(sites):
     a, _ = sites
-    # The suggestion lists that committing on type damaged are not dialogs.
+    # The point of the whole affordance layer: "type" into a combobox still
+    # commits, because the page said the element takes a choice. Making type
+    # commit *everything* was tried and reverted (it cost Everest 3 of 3);
+    # scoping it by what the element is costs nothing.
     controller = await _open(a, "/combobox")
     try:
-        await controller.execute(Action(
-            action=ActionType.TYPE, element_id=await _element_id(controller, "City"), text="Tokyo",
-        ))
-        assert "Chosen" not in await controller.page_text()
+        [city] = [el for el in (await controller.observer.observe(
+            include_screenshot=False, extract_dom=True)).elements if "City" in el.label]
+        assert city.takes == "choose"          # decided by the page
+        await controller.execute(Action(action=ActionType.TYPE, element_id=city.id, text="Tokyo"))
+        assert "Chosen: Tokyo" in await controller.page_text()
     finally:
         await controller.close()
 
+
+async def test_a_plain_field_is_still_only_filled(sites):
+    a, _ = sites
+    # The other half of the same rule: nothing commits on a field that keeps
+    # what it is given, so a search box behaves exactly as it always did.
+    controller = await _open(a, "/plainfield")
+    try:
+        [notes] = [el for el in (await controller.observer.observe(
+            include_screenshot=False, extract_dom=True)).elements if "Notes" in el.label]
+        assert notes.takes == "fill"
+        await controller.execute(Action(action=ActionType.CHOOSE, element_id=notes.id, text="Tokyo"))
+        assert await controller._page.input_value("input") == "Tokyo"
+        assert "Chosen" not in await controller.page_text()
+    finally:
+        await controller.close()

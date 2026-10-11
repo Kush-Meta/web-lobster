@@ -689,14 +689,6 @@ class Orchestrator:
                     self._visited_origins.add(origin_of(observation.url))
                 await self._ui_emit("on_observation", observation)
 
-                # --- GIVE A SLOW PAGE ITS MOMENT ---
-                # Before anything judges this page: jaipurliteraturefestival.org
-                # renders nothing for three and a half seconds, and judging it
-                # early wrote the right page off as dead.
-                if dom_mode and _looks_empty(observation):
-                    observation = await self._wait_for_the_page(observation)
-                    self.state.current_observation = observation
-
                 # --- WHAT DID THE LAST ACTION DO? ---
                 # The executor used to see only what it had tried, never what came
                 # of it, so nothing stopped it making the same guess three times.
@@ -731,7 +723,7 @@ class Orchestrator:
                 # and if that isn't better, end the attempt so the plan can change.
                 # Only without a screenshot: a vision model can work a page that
                 # is all canvas or image, where there is nothing to read or click.
-                if dom_mode and _looks_empty(observation):
+                if dom_mode and observation.is_empty:
                     logger.warning("empty_page", url=observation.url)
                     if went_back_from_nothing:
                         reflections.append(
@@ -1089,11 +1081,6 @@ class Orchestrator:
             return {}
         if self.enforcer:
             observation = self.enforcer.redact_observation(observation)
-        if _looks_empty(observation):
-            # Values are read off a page that may still be rendering. A festival's
-            # speaker list arrives seven seconds in; read at two, the run came
-            # back done with nothing in it three times out of three.
-            observation = await self._wait_for_the_page(observation)
         # Read the page's main content: an observation's truncated text often stops
         # inside the site's menus. (The controller redacts it under a mandate.)
         main_text = await self.browser.page_text(main_only=True, limit=PAGE_TEXT_LIMIT)
@@ -1387,7 +1374,7 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
             if status is not None and status >= 400:
                 self._remember_dead(action, url, f"answered {status}")
                 return f"{url} answered {status}"
-            if _looks_empty(now):
+            if now.is_empty:
                 self._remember_dead(action, url, "had nothing on it")
                 return f"went to {url}, which has nothing on it"
             if not moved:
@@ -1420,27 +1407,6 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
         for url in {action.url, landed}:
             if url:
                 self._dead_urls[url.rstrip("/")] = why
-
-    async def _wait_for_the_page(self, observation: Observation) -> Observation:
-        """Re-observe an empty page while its requests are still in flight.
-
-        The same patience evidence checks get: waiting can't invent elements,
-        it can only let a page that was still rendering finish. Bounded by
-        agent.evidence_wait_seconds, and only ever paid on a page that looks
-        empty. A quiet network doesn't mean the page is done — plenty of pages
-        render from a timer or hydrate with no request in flight.
-        """
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.agent.evidence_wait_seconds
-        while loop.time() < deadline:
-            await asyncio.sleep(0.5)
-            fresh = await self.browser.observer.observe(include_screenshot=False, extract_dom=True)
-            if self.enforcer:
-                fresh = self.enforcer.redact_observation(fresh)
-            if not _looks_empty(fresh):
-                logger.info("page_arrived_late", url=fresh.url, elements=len(fresh.elements))
-                return fresh
-        return observation
 
     async def _cheap_checks(self, sub_goal: SubGoal) -> Optional[dict[str, bool]]:
         """How a sub-goal's code-checkable evidence stands, without a model call.
@@ -1512,11 +1478,6 @@ If the task was an action (e.g. "search for X") rather than a question, summaris
 
 def _normalise(text: str) -> str:
     return " ".join(text.split()).casefold()
-
-
-def _looks_empty(observation: Observation) -> bool:
-    """Nothing to click and nothing to read: not a page an executor can work."""
-    return not observation.elements and not (observation.page_text or "").strip()
 
 
 class AgentResult:

@@ -120,7 +120,7 @@ Step by step, with the code that does it:
 | Plan | Sub-goals, each with optional `extract` (values to read) and `evidence` (checks). Small-model mistakes are tidied: guessed search URLs are dropped, and extract and click-level steps are folded into the outcomes they belong to | `Planner.plan`, `tidy_sub_goals` |
 | Review | Code checks the plan against the mandate and itself; one revision round | `review_plan`, `Orchestrator._review_plan`, `Planner.revise` |
 | Already there? | A sub-goal that only opens a page counts as done when its url check already passes | `Orchestrator._already_there` |
-| Act | Observe → executor picks one action → element check → nothing-to-enter check → mandate pre-check → safety gate → execute → report what the network layer blocked | `Orchestrator._execute_subgoal`, `browser/`, `models/executor.py` |
+| Act | Observe (settled) → executor picks an intent → element check → nothing-to-enter check → mandate pre-check → safety gate → **the gesture is chosen from the element's affordance, not from the verb** → report what the network layer blocked | `Orchestrator._execute_subgoal`, `BrowserController._enter`, `browser/affordances.py` |
 | Proven already? | Before deciding anything, the checks code can settle (`url`, `text` — no model call) are re-evaluated. A goal whose checks have gone from failing to passing ends there, so the executor can't carry on past what it achieved | `Orchestrator._cheap_checks` |
 | Dead page? | An observation with no elements and no text ends the attempt after one step back, instead of spending the budget on elements that aren't there | `Orchestrator._execute_subgoal` |
 | Stuck | Repeated actions trigger a reflection and a retry | `utils/retry.py` `StuckDetector`, `Executor.reflect` |
@@ -173,7 +173,8 @@ Each role (planner, executor, validator) picks its own backend in config. The ex
 | Module | Role |
 |---|---|
 | `browser/controller.py` | Playwright lifecycle, action execution, typing granted data at the last moment, main-content page text, what the page's fields hold, and the status the document itself answered. Knows how real widgets commit: a picker's Done, a combobox's suggestion, a `<select>`'s option |
-| `browser/observer.py` | Page state: interactive elements, accessibility tree, DOM summary, screenshots, login detection. Skips elements covered by something else |
+| `browser/observer.py` | Page state: interactive elements, accessibility tree, DOM summary, screenshots, login detection. Skips elements covered by something else. **Promises a settled page** — one that has rendered something, waiting up to `browser.settle_seconds` — or flags the observation `rendering` |
+| `browser/affordances.py` | **What an element takes**: `open`, `press`, `fill`, `choose`, `toggle`, `confirm`, decided from what the page says the element is. A search box in a form is filled; a city combobox or a date picker keeps nothing until something is chosen |
 | `browser/annotator.py` | Numbered badges on screenshots so vision models can ground element ids |
 | `actions/safety.py`, `actions/registry.py` | Safety gate (confirmation keywords, URL allow/block lists, per-sub-goal action cap) and the action registry |
 
@@ -243,8 +244,8 @@ All inter-component data is Pydantic, in `core/schemas.py` unless noted.
 
 | Model | Carries |
 |---|---|
-| `Action` | One browser action: type, element id, text, URL, reason |
-| `Observation` | URL, title, interactive elements, accessibility tree, DOM summary, page text, screenshots, login flag |
+| `Action` | One **intent** and what it did: `fill`, `choose`, `open`, `press` (with `type`, `select`, `click` as the original names), element id, text, URL, reason, and the `outcome` filled in after it ran |
+| `Observation` | URL, title, interactive elements (each with what it `takes`), accessibility tree, DOM summary, page text, screenshots, login flag, and whether the page was still `rendering` |
 | `SubGoal` / `TaskPlan` | Goal, success criteria, status, attempts, `extract` value specs, and `evidence` checks |
 | `TaskBrief` / `Question` / `PlanningContext` (`core/briefing.py`) | The brief, typed questions with defaults, and everything the planner may know |
 | `ValueSpec` / `ExtractedValue` (`core/values.py`) | A value to read, with an optional shape (`pattern`, `min`, `max`) and an optional position (`pick: first` / `last`), both enforced in code, and the checked result with its origin |
@@ -297,6 +298,10 @@ The details are in [mcp-server.md](mcp-server.md).
 - **A value type:** extend `ValueType` and `coerce_value` in `core/values.py`. The type decides whether the planner may see the value.
 - **A plan-review rule:** add it to `review_plan` in `core/briefing.py`. Rules may only read the plan and the mandate.
 - **A benchmark scenario:** add routes, a script, and ground-truth checks in `bench/scenarios.py`.
+
+## Where this is going
+
+[design/step-9-architecture.md](design/step-9-architecture.md) is a rethink of everything on this page below the security model: five layers with contracts, intents instead of keystrokes, findings as a typed feedback channel, and five named loops in place of one implicit one. Phases 1 and 2 — the environment contract and intents — are built and described there; the rest is proposed.
 
 ## Design records
 

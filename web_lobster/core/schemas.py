@@ -23,6 +23,15 @@ from web_lobster.verify.evidence import EvidenceCheck
 # ---------------------------------------------------------------------------
 
 class ActionType(str, Enum):
+    # Intents: what you want to be true of the page. The gesture that achieves
+    # it is chosen from the element's affordance (browser/affordances.py), not
+    # from the name used here — so naming the wrong one costs nothing.
+    FILL = "fill"                   # put this value in a field
+    CHOOSE = "choose"               # pick from a list, combobox or picker
+    OPEN = "open"                   # follow a link
+    PRESS = "press"                 # press a button
+    # The original vocabulary, kept: plans, memory and tests speak it, and
+    # each one maps onto an intent above.
     CLICK = "click"
     TRIPLE_CLICK = "triple_click"   # select-all in text fields before retyping
     TYPE = "type"
@@ -88,6 +97,9 @@ class PageElement(BaseModel):
     tag: Optional[str] = None          # HTML tag name
     input_type: Optional[str] = None   # type attribute for <input> (password, email, ...)
     href: Optional[str] = None         # for links
+    # The gesture that commits a value here, decided by the page rather than
+    # guessed from the label: see browser/affordances.py
+    takes: Optional[str] = None
     stable_selector: Optional[str] = None  # CSS selector that survives React re-renders
     is_visible: bool = True
     is_enabled: bool = True
@@ -114,7 +126,15 @@ class Observation(BaseModel):
     page_text: Optional[str] = None            # visible text content (truncated)
     dom_structured: Optional[str] = None       # rich DOM summary for DOM mode
     login_detected: bool = False               # page requires authentication
+    # True when the page still had nothing on it after the settle budget, so
+    # everything above can tell "not finished yet" from "nothing there".
+    rendering: bool = False
     timestamp: float = Field(default_factory=time.time)
+
+    @property
+    def is_empty(self) -> bool:
+        """Nothing to press and nothing to read: not a page anything can work."""
+        return not self.elements and not (self.page_text or "").strip()
 
     def elements_summary(self, max_elements: int = 40) -> str:
         """Format elements as a compact text list for the executor prompt."""
@@ -123,6 +143,8 @@ class Observation(BaseModel):
             parts = [f"[{el.id}]", el.role, f'"{el.label}"']
             if el.value:
                 parts.append(f'value="{el.value}"')
+            if el.takes:
+                parts.append(f"takes={el.takes}")
             if el.href:
                 # Where a link actually goes, so a URL never has to be guessed.
                 parts.append(f"→ {_link_target(el.href)}")

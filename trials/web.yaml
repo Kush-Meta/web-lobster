@@ -4,6 +4,8 @@
 #
 # Every mandate is read-only, so nothing is submitted, bought, or sent.
 # python-latest's answer changes with each Python release: update `equals` when it does.
+# Last updated 2026-10-10, when 3.15.0 shipped and two runs were marked wrong for
+# reading the page correctly.
 
 tasks:
   - id: eiffel
@@ -22,7 +24,7 @@ tasks:
     values:
       - {name: latest_version, type: text, description: "the latest stable Python 3 release, like 3.14.1", pattern: '3\.\d+\.\d+'}
     expect:
-      latest_version: {equals: "3.14.7"}
+      latest_version: {equals: "3.15.0"}
 
   - id: everest
     task: Use Wikipedia's search box to find the article about Mount Everest, then find its elevation in metres.
